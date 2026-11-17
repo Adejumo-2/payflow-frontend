@@ -41,9 +41,18 @@ export async function applyCspToExport(directory = "out") {
     throw new Error(`No exported HTML files found in ${directory}.`);
   }
 
+  // Static fixtures copied into the export (embed/test.html) are not rendered
+  // through the root layout, so they carry no marker; skip those. If nothing
+  // carries the marker, the layout lost its CSP tag and the build must fail.
+  let stamped = 0;
   for (const file of htmlFiles) {
     const html = await readFile(file, "utf8");
+    if (!html.includes(CSP_MARKER)) continue;
     await writeFile(file, withInlineScriptHashes(html));
+    stamped += 1;
+  }
+  if (stamped === 0) {
+    throw new Error("CSP hash marker was not found in exported HTML.");
   }
 }
 

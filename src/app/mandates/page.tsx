@@ -359,6 +359,12 @@ function MandateDetailsInner() {
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-danger">{tr("Confirm cancellation?")}</span>
+                    {/* The safe choice comes first, as in every confirmation. */}
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs py-1"
+                      onClick={() => setConfirmCancel(false)}
+                    >{tr("No")}</button>
                     <button
                       type="button"
                       className="btn-danger text-xs py-1"
@@ -369,11 +375,6 @@ function MandateDetailsInner() {
                     >
                       {busy === "cancel" ?tr("Cancelling…") :tr("Yes, cancel")}
                     </button>
-                    <button
-                      type="button"
-                      className="btn-ghost text-xs py-1"
-                      onClick={() => setConfirmCancel(false)}
-                    >{tr("No")}</button>
                   </div>
                 )}
               </>
@@ -422,6 +423,12 @@ function MandateDetailsInner() {
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-danger">{tr("End this mandate permanently?")}</span>
+                    {/* Secondary first, committing action last. */}
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs py-1"
+                      onClick={() => setConfirmEnd(false)}
+                    >{tr("No")}</button>
                     <button
                       type="button"
                       className="btn-danger text-xs py-1"
@@ -434,11 +441,6 @@ function MandateDetailsInner() {
                     >
                       {busy === "end" ?tr("Ending…") :tr("Yes, end")}
                     </button>
-                    <button
-                      type="button"
-                      className="btn-ghost text-xs py-1"
-                      onClick={() => setConfirmEnd(false)}
-                    >{tr("No")}</button>
                   </div>
                 )}
               </>

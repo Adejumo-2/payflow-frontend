@@ -31,6 +31,11 @@ static import graphs — load them with `import()` where they are first used.
 If a route's budget must grow, raise it in `js-budget.json` in the same PR
 and say why.
 
+## Accessibility
+
+New components must pass the checklist in [docs/accessibility.md](docs/accessibility.md)
+before review.
+
 ## Code standards
 
 - **Strict TypeScript.** `strict` and `noUncheckedIndexedAccess` are on. Index

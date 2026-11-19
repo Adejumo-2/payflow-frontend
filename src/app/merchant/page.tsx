@@ -11,7 +11,7 @@ import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiP
 import { RevenueChart } from "@/components/RevenueChart";
 import { WebhookDeliveryHistory } from "@/components/WebhookDeliveryHistory";
 import { CohortRetentionTable } from "@/components/CohortRetentionTable";
-import { buildCsv, downloadCsv, exportFilename, type ChargeRow } from "@/lib/csv";
+import { buildCsv, buildMonthlyRevenueCsv, downloadCsv, exportFilename, monthlyRevenueFilename, type ChargeRow, type MonthlyRevenueRow } from "@/lib/csv";
 import { fillBuckets, parseRevenue, type BucketSize, type RevenuePoint } from "@/lib/revenue";
 import { parseMerchantChurn, type MerchantChurnMonth } from "@/lib/churn";
 import { endMandatesSequentially, type EndOutcome, chainMandatesFor, chainMerchantSummary, chainPlanSubscriberCount, chainPlansOf, chainUnpaidMandates, endable, mandateFunding, type UnpaidMandate } from "@/lib/chain";
@@ -1008,6 +1008,7 @@ export default function MerchantPage() {
   // Vault balance per subscriber address, read in parallel with mandates.
   const [balances, setBalances] = useState<Record<string, bigint | null>>({});
   const [exporting, setExporting] = useState(false);
+  const [monthlyExporting, setMonthlyExporting] = useState(false);
   const [feeBps, setFeeBps] = useState<number | null>(null);
   const [bucketSize, setBucketSize] = useState<BucketSize>("day");
   /**
@@ -1709,6 +1710,63 @@ export default function MerchantPage() {
       );
     } finally {
       setExporting(false);
+    }
+  }
+
+  /** Gather charges, group them by month, and download a per-month revenue summary. */
+  async function exportMonthlyRevenue() {
+    if (!address) return;
+    setMonthlyExporting(true);
+    try {
+      const byMonth = new Map<string, MonthlyRevenueRow>();
+      for (const m of mandates ?? []) {
+        const res = await api.charges(m.id);
+        if (!res) continue;
+        for (const c of res.charges) {
+          // Best-effort date: charges carry no date, so bucket by tx close time when available.
+          let date = "—";
+          try {
+            const tx = await server.getTransaction(c.tx_hash);
+            if ("createdAt" in tx) {
+              const createdAt = tx.createdAt as number;
+              const ms = createdAt > 1e12 ? createdAt : createdAt * 1000;
+              date = new Date(ms).toISOString().slice(0, 7);
+            }
+          } catch {
+            // Contract-only mode leaves the month unknown; skip rather than mislabel.
+          }
+          if (date === "—") continue;
+          const amount = BigInt(c.amount);
+          const fee = BigInt(c.fee);
+          const existing = byMonth.get(date);
+          if (existing) {
+            existing.charges += 1;
+            existing.gross = String(BigInt(existing.gross) + amount);
+            existing.fee = String(BigInt(existing.fee) + fee);
+            existing.net = String(BigInt(existing.net) + (amount - fee));
+          } else {
+            byMonth.set(date, {
+              month: date,
+              charges: 1,
+              gross: String(amount),
+              fee: String(fee),
+              net: String(amount - fee),
+            });
+          }
+        }
+      }
+      const rows = [...byMonth.values()].sort((a, b) =>
+        a.month < b.month ? -1 : a.month > b.month ? 1 : 0,
+      );
+      const months = rows.map((r) => r.month);
+      const from = months.length ? months[0]! : "all";
+      const to = months.length ? months[months.length - 1]! : "all";
+      downloadCsv(
+        buildMonthlyRevenueCsv(rows),
+        monthlyRevenueFilename(address, from, to),
+      );
+    } finally {
+      setMonthlyExporting(false);
     }
   }
 
@@ -2467,6 +2525,17 @@ export default function MerchantPage() {
                 aria-label={tr("Export charges to CSV")}
               >
                 {exporting ?tr("Exporting…") :tr("Export CSV")}
+              </button>
+            )}
+            {subscribersTab === "all" && (
+              <button
+                type="button"
+                className="btn-ghost mono text-sm"
+                disabled={monthlyExporting || mandates?.length === 0 || networkMismatch}
+                onClick={() => void exportMonthlyRevenue()}
+                aria-label={tr("Download monthly revenue summary")}
+              >
+                {monthlyExporting ? tr("Exporting…") : tr("Download monthly revenue summary")}
               </button>
             )}
           </div>

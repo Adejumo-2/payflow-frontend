@@ -67,6 +67,32 @@ const nextConfig = {
   assetPrefix: basePath || undefined,
   trailingSlash: true,
   images: { unoptimized: true },
+  // Keep stable vendor code in its own long-lived chunk so it survives deploys
+  // instead of being re-downloaded with every application change.
+  turbopack: {},
+  webpack: (config) => {
+    config.optimization = config.optimization ?? {};
+    config.optimization.splitChunks = {
+      chunks: "all",
+      cacheGroups: {
+        vendor: {
+          test: /[\\/]node_modules[\\/]/,
+          name: "vendors",
+          chunks: "all",
+          priority: 20,
+          reuseExistingChunk: true,
+        },
+        common: {
+          name: "common",
+          minChunks: 2,
+          chunks: "all",
+          priority: 10,
+          reuseExistingChunk: true,
+        },
+      },
+    };
+    return config;
+  },
   env: {
     NEXT_PUBLIC_APP_VERSION: appVersion,
     NEXT_PUBLIC_COMMIT_HASH: commitHash,

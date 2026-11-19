@@ -8,6 +8,7 @@ import {
   getVaultBalance,
   installTestWallet,
   loadContracts,
+  newestSubscriberMandate,
 } from "./contracts";
 
 /**
@@ -122,12 +123,17 @@ test("subscriber cancels the mandate", async ({ page }) => {
   await page.goto("/account/", { waitUntil: "networkidle" });
   await connectTestWallet(page, subscriber.publicKey);
 
+  const id = mandateId ?? (await newestSubscriberMandate(contracts, subscriber.publicKey));
+  mandateId = id;
   const cancel = page.getByRole("button", {
     name: `Cancel subscription #${mandateId}`,
   });
   await expect(cancel).toBeVisible({ timeout: 60_000 });
   await cancel.click();
-  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  // The confirm button is named by its aria-label, not its visible text.
+  await page
+    .getByRole("button", { name: `Confirm cancelling subscription #${mandateId}` })
+    .click();
 
   await expect(page.getByText("Cancelled", { exact: true })).toBeVisible({
     timeout: 60_000,

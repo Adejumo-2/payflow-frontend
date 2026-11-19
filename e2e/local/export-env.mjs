@@ -1,9 +1,13 @@
 /**
  * Print the build environment for the local-network end-to-end job
- * (payflow-frontend#117) as `KEY=value` lines, ready to append to
- * `$GITHUB_ENV`.
+ * (payflow-frontend#117).
  *
- *   node e2e/local/export-env.mjs >> "$GITHUB_ENV"
+ *   node e2e/local/export-env.mjs >> "$GITHUB_ENV"   # CI
+ *   eval "$(node e2e/local/export-env.mjs --shell)"  # local
+ *
+ * `--shell` quotes values for the shell: the network passphrase contains
+ * spaces and a semicolon (`Standalone Network ; February 2017`), which an
+ * unquoted `KEY=value` cannot carry.
  *
  * NEXT_PUBLIC_API_URL is deliberately empty: the suite proves the
  * contract-only mode the public demo runs in.
@@ -32,6 +36,11 @@ const env = {
   NEXT_PUBLIC_E2E_WALLET: "1",
 };
 
+const shell = process.argv.includes("--shell");
+const quote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+
 for (const [key, value] of Object.entries(env)) {
-  process.stdout.write(`${key}=${value}\n`);
+  process.stdout.write(
+    shell ? `export ${key}=${quote(value)}\n` : `${key}=${value}\n`,
+  );
 }

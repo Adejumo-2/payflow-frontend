@@ -76,8 +76,43 @@ async function waitForNetwork() {
   throw new Error(`local RPC did not become healthy at ${RPC_URL}`);
 }
 
+/**
+ * Create and fund an account from the network's root account, for an
+ * environment that runs without Friendbot (a quickstart started with
+ * `--enable core,rpc` has no Horizon, and Friendbot needs one).
+ */
+async function fundFromRoot(publicKey) {
+  const root = Keypair.fromSecret(process.env.E2E_ROOT_SECRET);
+  const account = await server.getAccount(root.publicKey());
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: PASSPHRASE,
+  })
+    .addOperation(Operation.createAccount({ destination: publicKey, startingBalance: "10000" }))
+    .setTimeout(120)
+    .build();
+  tx.sign(root);
+
+  const sent = await server.sendTransaction(tx);
+  if (sent.status === "ERROR") {
+    const result = JSON.stringify(sent.errorResult);
+    // Running the script twice must not fail on accounts it already funded.
+    if (result.includes("op_already_exists")) return;
+    throw new Error(`root could not fund ${publicKey}: ${result}`);
+  }
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const result = await server.getTransaction(sent.hash);
+    if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) return;
+    if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+      throw new Error(`funding ${publicKey} failed on-chain`);
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`funding ${publicKey} was not confirmed`);
+}
+
 async function fund(publicKey) {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       const res = await fetch(`${FRIENDBOT_URL}?addr=${encodeURIComponent(publicKey)}`);
       if (res.ok) return;
@@ -86,6 +121,10 @@ async function fund(publicKey) {
       log("friendbot is not up yet, retrying");
     }
     await sleep(1_000);
+  }
+  if (process.env.E2E_ROOT_SECRET) {
+    log(`friendbot unavailable, funding ${publicKey} from the root account`);
+    return fundFromRoot(publicKey);
   }
   throw new Error(`friendbot could not fund ${publicKey}`);
 }
@@ -168,6 +207,18 @@ async function main() {
   log(`subscriber ${subscriber.publicKey()}`);
   await fund(admin.publicKey());
   await fund(subscriber.publicKey());
+
+  // The native XLM Stellar Asset Contract has to exist before anything can
+  // move XLM: the vault deposits through it. Quickstart deploys it during its
+  // own setup, but a network started with `--enable core,rpc` has no setup
+  // step, so deploy it here. Constructing it twice is harmless.
+  log("deploying the native XLM Stellar Asset Contract");
+  try {
+    await submit(admin, Operation.createStellarAssetContract({ asset: Asset.native() }));
+  } catch (err) {
+    if (!/ExistingValue|already/i.test(String(err))) throw err;
+    log("native SAC already deployed");
+  }
 
   // Dependency order matters, exactly as payflow-contract/scripts/deploy.sh
   // documents: the subscription contract is constructed with the registry and

@@ -24,9 +24,9 @@ docker run --rm -d --name stellar-local -p 8000:8000 \
 # accounts, seeds one plan for the prerender, and writes .e2e/contracts.json.
 node e2e/local/deploy-contracts.mjs
 
-# Build the export against those ids with no indexer.
-node e2e/local/export-env.mjs > .e2e/build.env
-set -a && . ./.e2e/build.env && set +a
+# Build the export against those ids with no indexer. --shell quotes the
+# passphrase, which contains spaces and a semicolon.
+eval "$(node e2e/local/export-env.mjs --shell)"
 npm run build
 
 npx playwright test --config playwright.e2e.config.ts

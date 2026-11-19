@@ -141,6 +141,33 @@ export function getNextPlanId(contracts: LocalContracts) {
   return readContract<bigint>(contracts, contracts.contracts.planRegistry, "next_plan_id");
 }
 
+/**
+ * The newest mandate the subscriber opened, read from the contract. The suite
+ * caches it between tests, but a single test run (or a rerun against a network
+ * that already has mandates) still has to find the row it acts on.
+ */
+export async function newestSubscriberMandate(
+  contracts: LocalContracts,
+  subscriber: string,
+): Promise<bigint> {
+  const count = await readContract<number>(
+    contracts,
+    contracts.contracts.subscription,
+    "subscriber_mandate_count",
+    [address(subscriber)],
+  );
+  if (!count) throw new Error(`${subscriber} has no mandates`);
+  const ids = await readContract<bigint[]>(
+    contracts,
+    contracts.contracts.subscription,
+    "subscriber_mandates",
+    [address(subscriber), nativeToScVal(count - 1, { type: "u32" }), nativeToScVal(1, { type: "u32" })],
+  );
+  const id = ids[0];
+  if (id === undefined) throw new Error(`${subscriber} has no mandate at ${count - 1}`);
+  return BigInt(id);
+}
+
 export function getVaultBalance(contracts: LocalContracts, user: string) {
   return readContract<bigint>(contracts, contracts.contracts.vault, "balance", [
     address(user),

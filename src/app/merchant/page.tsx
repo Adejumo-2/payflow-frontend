@@ -82,7 +82,7 @@ function validatePlanNameLocal(name: string): string | null {
 
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { AddressLink, Badge, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 import { observeContractRecord } from "@/lib/contract-compat";
 import { ContractVersionNotice } from "@/components/ContractVersionNotice";
 import { subscribeLink } from "@/lib/share";
@@ -1581,15 +1581,18 @@ export default function MerchantPage() {
     };
   }, [address, firstPlanId, firstPlanName]);
 
-  async function run(key: string, fn: () => Promise<string>) {
+  /** Returns whether `fn` succeeded, so a caller can decide what to do next. */
+  async function run(key: string, fn: () => Promise<string>): Promise<boolean> {
     setBusy(key);
     setError(null);
     setDone(null);
     try {
       setDone(await fn());
       await load();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -2314,78 +2317,72 @@ export default function MerchantPage() {
                       </dl>
                     ) : null}
                   </div>
-                  {confirmDeactivate === p.id ? (
-                    <div
-                      className="w-full mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
-                      role="alert"
-                      aria-live="polite"
-                    >
-                      <div className="font-medium text-amber-200">{tr("Confirm plan deactivation")}</div>
-                      <p className="mt-1 text-xs text-muted">{tr("This plan has")}{" "}
-                        <strong className="text-foreground font-semibold">
-                          {openCount === 1 ?tr("1 open subscription") :tr("{0} open subscriptions", { "0": openCount })}
-                        </strong>{tr(". Existing subscribers will continue to be billed on schedule until their subscriptions are individually ended or cancelled. New subscribers will no longer be able to subscribe to this plan.")}</p>
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="btn-ghost text-xs"
-                          disabled={busy !== null}
-                          onClick={() => setConfirmDeactivate(null)}
-                        >{tr("Keep active")}</button>
-                        <button
-                          type="button"
-                          className="btn-primary text-xs"
-                          disabled={busy !== null || networkMismatch}
-                          onClick={() =>
-                            void run(`toggle-${p.id}`, () =>
-                              payflow.setPlanActive(address, signXdr, p.id, false),
-                            ).then(() => setConfirmDeactivate(null))
-                          }
-                        >
-                          {busy === `toggle-${p.id}` ?tr("Deactivating…") :tr("Confirm: deactivate")}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      {renameSupport && (
-                        <button
-                          type="button"
-                          className="btn-ghost text-xs"
-                          disabled={busy !== null || networkMismatch}
-                          onClick={() => {
-                            setRenameFor(p.id);
-                            setRenameValue(p.name);
-                          }}
-                          aria-label={tr("Edit name of plan {0}", { "0": p.name || `#${p.id}` })}
-                        >{tr("Edit name")}</button>
-                      )}
+                  <div className="flex items-center gap-2">
+                    {renameSupport && (
                       <button
                         type="button"
                         className="btn-ghost text-xs"
-                        onClick={() => setEmbedFor(embedFor === p.id ? null : p.id)}
-                        aria-expanded={embedFor === p.id}
-                        aria-label={tr("Embed snippet for plan {0}", { "0": p.name || `#${p.id}` })}
-                      >
-                        {embedFor === p.id ?tr("Close embed") :tr("Embed")}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-ghost"
                         disabled={busy !== null || networkMismatch}
                         onClick={() => {
-                          if (p.active) {
-                            setConfirmDeactivate(p.id);
-                          } else {
-                            void run(`toggle-${p.id}`, () =>
-                              payflow.setPlanActive(address, signXdr, p.id, true),
-                            );
-                          }
+                          setRenameFor(p.id);
+                          setRenameValue(p.name);
                         }}
-                      >
-                        {p.active ?tr("Deactivate") :tr("Activate")}
-                      </button>
-                    </div>
+                        aria-label={tr("Edit name of plan {0}", { "0": p.name || `#${p.id}` })}
+                      >{tr("Edit name")}</button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs"
+                      onClick={() => setEmbedFor(embedFor === p.id ? null : p.id)}
+                      aria-expanded={embedFor === p.id}
+                      aria-label={tr("Embed snippet for plan {0}", { "0": p.name || `#${p.id}` })}
+                    >
+                      {embedFor === p.id ?tr("Close embed") :tr("Embed")}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      disabled={busy !== null || networkMismatch}
+                      onClick={() => {
+                        if (p.active) {
+                          setError(null);
+                          setConfirmDeactivate(p.id);
+                        } else {
+                          void run(`toggle-${p.id}`, () =>
+                            payflow.setPlanActive(address, signXdr, p.id, true),
+                          );
+                        }
+                      }}
+                    >
+                      {p.active ?tr("Deactivate") :tr("Activate")}
+                    </button>
+                  </div>
+                  {confirmDeactivate === p.id && (
+                    <ConfirmDialog
+                      open
+                      onCancel={() => setConfirmDeactivate(null)}
+                      onConfirm={() =>
+                        void run(`toggle-${p.id}`, () =>
+                          payflow.setPlanActive(address, signXdr, p.id, false),
+                        ).then((ok) => {
+                          if (ok) setConfirmDeactivate(null);
+                        })
+                      }
+                      title={confirmTitle(tr("Deactivate plan {0}", { "0": p.name || `#${p.id}` }))}
+                      confirmLabel={tr("Confirm: deactivate")}
+                      cancelLabel={tr("Keep active")}
+                      busy={busy === `toggle-${p.id}`}
+                      busyLabel={tr("Deactivating…")}
+                      confirmDisabled={networkMismatch}
+                      danger
+                      error={error ?? undefined}
+                    >
+                      <p className="text-sm text-muted">{tr("This plan has")}{" "}
+                        <strong className="text-foreground font-semibold">
+                          {openCount === 1 ?tr("1 open subscription") :tr("{0} open subscriptions", { "0": openCount })}
+                        </strong>{tr(". Existing subscribers will continue to be billed on schedule until their subscriptions are individually ended or cancelled. New subscribers will no longer be able to subscribe to this plan.")}
+                      </p>
+                    </ConfirmDialog>
                   )}
                   {renameFor === p.id && (
                     <form

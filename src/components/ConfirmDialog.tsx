@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Dialog } from "@/components/ui";
+import { Dialog, Notice } from "@/components/ui";
 import { LoadingButton } from "@/components/LoadingButton";
 import { useI18n } from "@/i18n/provider";
 
@@ -18,7 +18,9 @@ import { useI18n } from "@/i18n/provider";
  * - the committing button is an action label ("Confirm cancellation"), never
  *   a bare "OK";
  * - while the write runs it becomes a `LoadingButton`, so it reports progress
- *   and cannot be submitted twice.
+ *   and cannot be submitted twice;
+ * - a failure stays on screen as `error`, and Escape/the close button are
+ *   ignored while busy, so a write in flight can only end by finishing.
  */
 export function ConfirmDialog({
   open,
@@ -32,6 +34,7 @@ export function ConfirmDialog({
   busyLabel,
   danger = false,
   confirmDisabled = false,
+  error,
 }: {
   open: boolean;
   onCancel: () => void;
@@ -50,12 +53,18 @@ export function ConfirmDialog({
   /** Use the danger colour for an irreversible action. */
   danger?: boolean;
   confirmDisabled?: boolean;
+  /** The confirmed write's last failure, so it can be retried or backed out of without losing context. */
+  error?: ReactNode;
 }) {
   const { t: tr } = useI18n();
+  // Escape and the close button both route through `onClose`; swallowing it
+  // while busy keeps them in step with the already-disabled Cancel button,
+  // so a write in flight cannot be dismissed out from under itself.
+  const handleClose = busy ? () => {} : onCancel;
   return (
     <Dialog
       open={open}
-      onClose={onCancel}
+      onClose={handleClose}
       title={title}
       actions={
         <>
@@ -79,6 +88,11 @@ export function ConfirmDialog({
         </>
       }
     >
+      {error && (
+        <div role="alert" className="mb-3">
+          <Notice tone="error">{error}</Notice>
+        </div>
+      )}
       {children}
     </Dialog>
   );

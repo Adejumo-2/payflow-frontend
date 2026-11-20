@@ -80,7 +80,7 @@ import { computeVaultRunway } from "@/lib/runway";
 import { loadTokenMeta, metaFor, useTokenMetas } from "@/lib/token";
 import { VirtualList } from "@/components/VirtualList";
 import { AmountInput } from "@/components/AmountInput";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 import { observeContractRecord } from "@/lib/contract-compat";
 import { ContractVersionNotice } from "@/components/ContractVersionNotice";
 import { LoadingButton } from "@/components/LoadingButton";
@@ -591,7 +591,8 @@ function AccountInner() {
     }
   }
 
-  async function run(key: string, fn: () => Promise<string>) {
+  /** Returns whether `fn` succeeded, so a caller can decide what to do next. */
+  async function run(key: string, fn: () => Promise<string>): Promise<boolean> {
     setBusy(key);
     setError(null);
     setDone(null);
@@ -602,8 +603,10 @@ function AccountInner() {
       // Every write here spends the native balance on fees, so the header's
       // figure is stale the moment the transaction lands.
       await refreshAccount();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -1627,37 +1630,40 @@ function AccountInner() {
                               onClick={() => openPausePicker(m.id)}
                             >{tr("Pause until…")}</button>
                           ))}
-                        {confirmCancel === m.id ? (
-                          <>
-                            <button
-                              type="button"
-                              className="btn-ghost"
-                              disabled={busy !== null}
-                              autoFocus
-                              onClick={() => setConfirmCancel(null)}
-                            >{tr("Keep")}</button>
-                            <button
-                              type="button"
-                              className="btn-danger"
-                              disabled={busy !== null || networkMismatch}
-                              aria-label={tr("Confirm cancelling subscription #{0}", { "0": m.id })}
-                              onClick={() =>
-                                void run(`cancel-${m.id}`, () =>
-                                  payflow.cancel(address!, signXdr, m.id),
-                                ).then(() => setConfirmCancel(null))
-                              }
-                            >
-                              {busy === `cancel-${m.id}` ?tr("Cancelling…") :tr("Confirm")}
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn-ghost text-danger"
-                            disabled={busy !== null || networkMismatch}
-                            aria-label={tr("Cancel subscription #{0}", { "0": m.id })}
-                            onClick={() => setConfirmCancel(m.id)}
-                          >{tr("Cancel")}</button>
+                        <button
+                          type="button"
+                          className="btn-ghost text-danger"
+                          disabled={busy !== null || networkMismatch}
+                          aria-label={tr("Cancel subscription #{0}", { "0": m.id })}
+                          onClick={() => {
+                            setError(null);
+                            setConfirmCancel(m.id);
+                          }}
+                        >{tr("Cancel")}</button>
+                        {confirmCancel === m.id && (
+                          <ConfirmDialog
+                            open
+                            onCancel={() => setConfirmCancel(null)}
+                            onConfirm={() =>
+                              void run(`cancel-${m.id}`, () =>
+                                payflow.cancel(address!, signXdr, m.id),
+                              ).then((ok) => {
+                                if (ok) setConfirmCancel(null);
+                              })
+                            }
+                            title={confirmTitle(tr("Cancel subscription #{0}", { "0": m.id }))}
+                            confirmLabel={tr("Confirm cancellation")}
+                            cancelLabel={tr("Keep")}
+                            busy={busy === `cancel-${m.id}`}
+                            busyLabel={tr("Cancelling…")}
+                            confirmDisabled={networkMismatch}
+                            danger
+                            error={error ?? undefined}
+                          >
+                            <p className="text-muted">
+                              {tr("This subscription stops billing immediately. This cannot be undone.")}
+                            </p>
+                          </ConfirmDialog>
                         )}
                       </div>
                     )}

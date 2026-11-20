@@ -136,9 +136,8 @@
   "Completed": "Terminé",
   "Confirm": "Confirmer",
   "Confirm and sign": "Confirmer et signer",
+  "Confirm cancellation": "Confirmer l’annulation",
   "Confirm cancellation?": "Confirmer l’annulation ?",
-  "Confirm cancelling subscription #{0}": "Confirmer l’annulation de l’abonnement n° {0}",
-  "Confirm plan deactivation": "Confirmer la désactivation de l’offre",
   "Confirm refund": "Confirmer le remboursement",
   "Confirm: deactivate": "Confirmer : désactiver",
   "Confirm: deactivate all": "Confirmer : tout désactiver",
@@ -618,7 +617,6 @@
   "Wrong network": "Mauvais réseau",
   "XLM": "XLM",
   "Yearly": "Annuel",
-  "Yes, cancel": "Oui, annuler",
   "Yes, end": "Oui, résilier",
   "You": "Vous",
   "You are not the subscriber on this mandate.": "Vous n’êtes pas l’abonné de ce mandat.",
@@ -747,5 +745,7 @@
   "Confirm deactivation": "Confirmer la désactivation",
   "Cancel {0} subscription{1}?": "Annuler {0} abonnement{1} ?",
   "Cancel subscriptions": "Annuler les abonnements",
-  "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Chaque abonnement actif ou en pause ci-dessous cesse immédiatement d’être facturé. Cette action est irréversible."
+  "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Chaque abonnement actif ou en pause ci-dessous cesse immédiatement d’être facturé. Cette action est irréversible.",
+  "This subscription stops billing immediately. This cannot be undone.": "Cet abonnement cesse immédiatement d’être facturé. Cette action est irréversible.",
+  "Deactivate plan {0}": "Désactiver l’offre {0}"
 }

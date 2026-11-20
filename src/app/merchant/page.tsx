@@ -81,7 +81,10 @@ function validatePlanNameLocal(name: string): string | null {
 }
 
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
-import { AddressLink, Badge, Dialog, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
+import { AddressLink, Badge, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { observeContractRecord } from "@/lib/contract-compat";
+import { ContractVersionNotice } from "@/components/ContractVersionNotice";
 import { subscribeLink } from "@/lib/share";
 
 const PERIOD_OPTIONS = [
@@ -1237,6 +1240,7 @@ export default function MerchantPage() {
 
     let loadedPlans: ApiPlan[] = [];
     if (p) {
+      p.plans.forEach((plan) => observeContractRecord("plan", plan));
       setPlans(p.plans);
       loadedPlans = p.plans;
     } else {
@@ -1258,6 +1262,7 @@ export default function MerchantPage() {
         rows = [];
       }
     }
+    rows.forEach((mandate) => observeContractRecord("mandate", mandate));
     setMandates(rows);
     // Drop selections for mandates that no longer exist or are no longer endable.
     const endableIds = new Set(rows.filter(endable).map((r) => r.id));
@@ -1942,6 +1947,7 @@ export default function MerchantPage() {
         />
       </div>
 
+      <ContractVersionNotice />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {deactivateAllDone && (
         <Notice tone="ok">{tr("All active plans deactivated.")}</Notice>
@@ -2963,30 +2969,19 @@ export default function MerchantPage() {
       <WebhooksPanel key={`webhooks:${address}`} merchant={address} apiConfigured={api.isConfigured()} />
 
       {confirmDeactivateAll && (
-        <Dialog
+        <ConfirmDialog
           open={confirmDeactivateAll}
-          onClose={() => setConfirmDeactivateAll(false)}
-          title={tr("Deactivate all active plans")}
-          actions={
-            <>
-              <button
-                type="button"
-                className="btn-ghost"
-                disabled={busy !== null || deactivateAllProgress !== null}
-                onClick={() => setConfirmDeactivateAll(false)}
-              >{tr("Keep active")}</button>
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={busy !== null || networkMismatch || deactivateAllProgress !== null}
-                onClick={() => void deactivateAllPlans()}
-              >
-                {deactivateAllProgress
-                  ?tr("Deactivating… ({0}/{1} pages)", { "0": deactivateAllProgress.current, "1": deactivateAllProgress.total })
-                  :tr("Confirm: deactivate all")}
-              </button>
-            </>
+          onCancel={() => setConfirmDeactivateAll(false)}
+          onConfirm={() => void deactivateAllPlans()}
+          title={tr("Deactivate all active plans?")}
+          confirmLabel={tr("Confirm deactivation")}
+          busy={deactivateAllProgress !== null}
+          busyLabel={
+            deactivateAllProgress
+              ? tr("Deactivating… ({0}/{1} pages)", { "0": deactivateAllProgress.current, "1": deactivateAllProgress.total })
+              : undefined
           }
+          confirmDisabled={busy !== null || networkMismatch}
         >
           <div className="space-y-2 text-sm">
             {(() => {
@@ -3010,7 +3005,7 @@ export default function MerchantPage() {
               );
             })()}
           </div>
-        </Dialog>
+        </ConfirmDialog>
       )}
     </div>
   );

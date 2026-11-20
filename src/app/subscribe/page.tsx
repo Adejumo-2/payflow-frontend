@@ -14,7 +14,7 @@ import { config } from "@/lib/config";
 import { payflow } from "@/lib/lazy-payflow";
 import { planParam } from "@/lib/share";
 import { useWallet } from "@/lib/wallet";
-import { fromStroops, type TokenMeta } from "@/lib/format";
+import type { TokenMeta } from "@/lib/format";
 import { trialSeconds } from "@/lib/trial";
 import { availabilityInteger, planAvailability } from "@/lib/availability";
 import {
@@ -27,9 +27,14 @@ import { metaFor, useTokenMetas } from "@/lib/token";
 import { filterAndSortPlans, type PlanPeriodOption, type PlanSortOption } from "@/lib/plans";
 import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/price";
 import { checkChargeLimit, confirmationFor } from "@/lib/subscribe-confirmation";
-import { Dialog, Empty, MerchantAccount, Notice, Panel, SkeletonPlanCards, TxLink } from "@/components/ui";
+import { observeContractRecord } from "@/lib/contract-compat";
+import { Empty, MerchantAccount, Notice, Panel, SkeletonPlanCards, TxLink } from "@/components/ui";
 import { useAction } from "@/lib/useAction";
 import { SubscriberGuide } from "@/components/SubscriberGuide";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { DepositCoverageInput } from "@/components/DepositCoverageInput";
+import { LoadingButton } from "@/components/LoadingButton";
 
 /** Remaining seats in words, without inventing a count the source cannot provide. */
 function seatsLabel(plan: ApiPlan, now: number, tr: Translation): string {
@@ -250,6 +255,9 @@ function SubscribeInner() {
       loaded = [];
     }
     if (generation === request.current) {
+      // Indexer rows carry future columns too; observe them so a newer
+      // contract/backend is reported even when the contract fallback is idle.
+      loaded.forEach((plan) => observeContractRecord("plan", plan));
       setPlans(loaded);
       setDirect(!res);
     }
@@ -353,7 +361,7 @@ function SubscribeInner() {
     void subscribe(plan, limit);
   }
 
-  async function depositFor(plan: ApiPlan) {
+  async function depositFor(plan: ApiPlan, amount: bigint) {
     if (!address) {
       setError(tr("Connect a wallet first."));
       return;
@@ -362,12 +370,13 @@ function SubscribeInner() {
       setError(tr("Switch your wallet to the correct network first."));
       return;
     }
+    if (amount <= 0n) {
+      setError(tr("Enter a deposit amount first."));
+      return;
+    }
     setDepositBusy(plan.id);
     setError(null);
     try {
-      const cap = checkChargeLimit(maxCharges[plan.id]);
-      const periods = cap.ok && cap.limit > 0 ? cap.limit : 3;
-      const amount = BigInt(plan.amount) * BigInt(periods);
       const hash = await payflow.deposit(
         address,
         async (xdr) => {
@@ -536,6 +545,7 @@ function SubscribeInner() {
       {direct && (
         <Notice tone="info">{tr("Reading plans directly from the contract — the indexer is not reachable, so this list is capped at the first 24 plans.")}</Notice>
       )}
+      <ContractVersionNotice />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {done && (
         <Notice tone="ok">{tr("Subscribed. Transaction")}{" "}<TxLink hash={done} />
@@ -771,24 +781,21 @@ function SubscribeInner() {
                             </div>
 
                             {!funded && (
-                              <button
-                                type="button"
-                                className="btn-ghost w-full text-xs"
+                              <DepositCoverageInput
+                                planAmount={plan.amount}
+                                decimals={meta.decimals}
+                                symbol={meta.symbol}
+                                busy={depositBusy === plan.id}
                                 disabled={depositBusy !== null || !address || networkMismatch}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  depositFor(plan);
-                                }}
-                              >
-                                {depositBusy === plan.id
-                                  ? tr("Depositing…")
-                                  : tr("Deposit {0} {1} (approx {2} periods)", { 0: formatTokenValue(required, 4, meta.decimals), 1: meta.symbol, 2: periods })}
-                              </button>
+                                onDeposit={(amount) => depositFor(plan, amount)}
+                              />
                             )}
 
-                            <button
-                              type="button"
-                              className="btn-primary w-full"
+                            <LoadingButton
+                              variant="primary"
+                              className="w-full"
+                              loading={busy === plan.id}
+                              loadingText={tr("Confirming…")}
                               disabled={
                                 busy !== null || !address || networkMismatch || availability.reason !== null
                               }
@@ -798,14 +805,12 @@ function SubscribeInner() {
                                 openConfirmation(plan);
                               }}
                             >
-                              {busy === plan.id
-                                ?tr("Confirming…")
-                                : networkMismatch
+                              {networkMismatch
                                 ?tr("Wrong network")
                                 : address
                                 ?tr("Subscribe")
                                 :tr("Connect wallet")}
-                            </button>
+                            </LoadingButton>
                           </div>
                         );
                       })()}
@@ -828,20 +833,12 @@ function SubscribeInner() {
         focus to this card's Subscribe button, so this is a stated commitment
         rather than another inline paragraph.
       */}
-      <Dialog
+      <ConfirmDialog
         open={confirmation !== null}
-        onClose={() => setPending(null)}
+        onCancel={() => setPending(null)}
+        onConfirm={confirmSubscription}
         title={confirmation ? tr("Subscribe to {0}?", { "0": pendingName }) : ""}
-        actions={
-          <>
-            <button type="button" className="btn-ghost" onClick={() => setPending(null)}>
-              {tr("Go back")}
-            </button>
-            <button type="button" className="btn-primary" onClick={confirmSubscription}>
-              {tr("Confirm and sign")}
-            </button>
-          </>
-        }
+        confirmLabel={tr("Confirm and sign")}
       >
         {confirmation && pendingPlan && pendingMeta && (
           <>
@@ -898,7 +895,7 @@ function SubscribeInner() {
             </p>
           </>
         )}
-      </Dialog>
+      </ConfirmDialog>
     </div>
   );
 }

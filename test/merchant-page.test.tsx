@@ -462,7 +462,7 @@ describe("MerchantPage deactivate all plans", () => {
     await waitForPlans();
     fireEvent.click(await screen.findByRole("button", { name: "Deactivate all plans" }));
 
-    const dialog = await screen.findByRole("dialog", { name: "Deactivate all active plans" });
+    const dialog = await screen.findByRole("dialog", { name: "Deactivate all active plans?" });
     expect(dialog.textContent).toContain("This will deactivate 2 active plans");
     expect(dialog.textContent).toContain("Affected open subscriptions: 2 mandates");
   });
@@ -477,8 +477,8 @@ describe("MerchantPage deactivate all plans", () => {
     await waitForPlans();
     fireEvent.click(await screen.findByRole("button", { name: "Deactivate all plans" }));
 
-    await screen.findByRole("dialog", { name: "Deactivate all active plans" });
-    fireEvent.click(screen.getByRole("button", { name: "Confirm: deactivate all" }));
+    await screen.findByRole("dialog", { name: "Deactivate all active plans?" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
 
     // The call is in flight: the dialog shows the first page in progress.
     await waitFor(() =>
@@ -525,8 +525,8 @@ describe("MerchantPage deactivate all plans", () => {
     await screen.findByRole("button", { name: "Deactivate all plans" });
     fireEvent.click(screen.getByRole("button", { name: "Deactivate all plans" }));
 
-    await screen.findByRole("dialog", { name: "Deactivate all active plans" });
-    fireEvent.click(screen.getByRole("button", { name: "Confirm: deactivate all" }));
+    await screen.findByRole("dialog", { name: "Deactivate all active plans?" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
 
     // First page, 50 plans, still in flight.
     await waitFor(() =>
@@ -590,8 +590,8 @@ describe("MerchantPage deactivate all plans", () => {
     await waitForPlans();
     fireEvent.click(await screen.findByRole("button", { name: "Deactivate all plans" }));
 
-    await screen.findByRole("dialog", { name: "Deactivate all active plans" });
-    fireEvent.click(screen.getByRole("button", { name: "Confirm: deactivate all" }));
+    await screen.findByRole("dialog", { name: "Deactivate all active plans?" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
 
     // While a run is in flight the panel button cannot re-open the dialog.
     await waitFor(() => expect(payflowMock.deactivatePage).toHaveBeenCalled());
@@ -612,8 +612,8 @@ describe("MerchantPage deactivate all plans", () => {
     await waitForPlans();
     fireEvent.click(await screen.findByRole("button", { name: "Deactivate all plans" }));
 
-    await screen.findByRole("dialog", { name: "Deactivate all active plans" });
-    fireEvent.click(screen.getByRole("button", { name: "Confirm: deactivate all" }));
+    await screen.findByRole("dialog", { name: "Deactivate all active plans?" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
 
     await waitFor(() => expect(screen.getByText("RPC error")).toBeTruthy());
     expect(screen.queryByText("All active plans deactivated.")).toBeNull();

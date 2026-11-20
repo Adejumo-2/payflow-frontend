@@ -732,5 +732,20 @@
   "· protocol fee": "· frais du protocole",
   "· to": "· vers",
   "— copy yours from the merchant dashboard.": "— copiez le vôtre depuis le tableau de bord marchand.",
-  "← Back to overview": "← Retour à la présentation"
+  "← Back to overview": "← Retour à la présentation",
+  "Working…": "En cours…",
+  "Periods": "Périodes",
+  "1 period": "1 période",
+  "{0} periods": "{0} périodes",
+  "{0} {1} covers {2}.": "{0} {1} couvre {2}.",
+  "Enter a coverage amount to see how many periods it funds.": "Saisissez un montant de couverture pour voir combien de périodes il finance.",
+  "Enter a whole number of periods.": "Saisissez un nombre entier de périodes.",
+  "This plan has no price to cover.": "Cette offre n’a pas de prix à couvrir.",
+  "Enter a deposit amount first.": "Saisissez d’abord un montant à déposer.",
+  "This deployment's contracts are newer than this version of the app. Some new options may not be shown here yet. Everything this page knows about still works — update the app to see the rest.": "Les contrats de ce déploiement sont plus récents que cette version de l’application. Certaines nouvelles options peuvent ne pas encore apparaître ici. Tout ce que cette page connaît fonctionne toujours ; mettez l’application à jour pour voir le reste.",
+  "Deactivate all active plans?": "Désactiver toutes les offres actives ?",
+  "Confirm deactivation": "Confirmer la désactivation",
+  "Cancel {0} subscription{1}?": "Annuler {0} abonnement{1} ?",
+  "Cancel subscriptions": "Annuler les abonnements",
+  "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Chaque abonnement actif ou en pause ci-dessous cesse immédiatement d’être facturé. Cette action est irréversible."
 }

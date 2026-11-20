@@ -732,5 +732,20 @@
   "· protocol fee": "· protocol fee",
   "· to": "· to",
   "— copy yours from the merchant dashboard.": "— copy yours from the merchant dashboard.",
-  "← Back to overview": "← Back to overview"
+  "← Back to overview": "← Back to overview",
+  "Working…": "Working…",
+  "Periods": "Periods",
+  "1 period": "1 period",
+  "{0} periods": "{0} periods",
+  "{0} {1} covers {2}.": "{0} {1} covers {2}.",
+  "Enter a coverage amount to see how many periods it funds.": "Enter a coverage amount to see how many periods it funds.",
+  "Enter a whole number of periods.": "Enter a whole number of periods.",
+  "This plan has no price to cover.": "This plan has no price to cover.",
+  "Enter a deposit amount first.": "Enter a deposit amount first.",
+  "This deployment's contracts are newer than this version of the app. Some new options may not be shown here yet. Everything this page knows about still works — update the app to see the rest.": "This deployment's contracts are newer than this version of the app. Some new options may not be shown here yet. Everything this page knows about still works — update the app to see the rest.",
+  "Deactivate all active plans?": "Deactivate all active plans?",
+  "Confirm deactivation": "Confirm deactivation",
+  "Cancel {0} subscription{1}?": "Cancel {0} subscription{1}?",
+  "Cancel subscriptions": "Cancel subscriptions",
+  "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Every active or paused subscription listed below stops billing immediately. This cannot be undone."
 }

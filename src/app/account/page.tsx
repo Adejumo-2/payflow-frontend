@@ -80,6 +80,10 @@ import { computeVaultRunway } from "@/lib/runway";
 import { loadTokenMeta, metaFor, useTokenMetas } from "@/lib/token";
 import { VirtualList } from "@/components/VirtualList";
 import { AmountInput } from "@/components/AmountInput";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { observeContractRecord } from "@/lib/contract-compat";
+import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { LoadingButton } from "@/components/LoadingButton";
 import {
   Badge,
   Empty,
@@ -123,6 +127,10 @@ function AccountInner() {
   const [busy, setBusy] = useState<string | null>(null);
   // Cancelling is permanent, so the first click only reveals Keep/Confirm.
   const [confirmCancel, setConfirmCancel] = useState<number | null>(null);
+  // The mandates a "Cancel all" press would cancel, once they are loaded.
+  // Keeping them in state lets the standard confirmation dialog replace the
+  // unstyled `window.confirm` that used to guard this irreversible batch.
+  const [cancelAllTargets, setCancelAllTargets] = useState<ApiMandate[] | null>(null);
   // The mandate whose date picker is open, and the date typed into it.
   const [pauseFor, setPauseFor] = useState<number | null>(null);
   const [pauseDate, setPauseDate] = useState("");
@@ -225,6 +233,7 @@ function AccountInner() {
     if (bal.status === "fulfilled") setBalance(bal.value);
 
     if (res.status === "fulfilled" && res.value) {
+      res.value.mandates.forEach((mandate) => observeContractRecord("mandate", mandate));
       setMandates(res.value.mandates);
       setMandatesFromApi(true);
     } else {
@@ -641,6 +650,7 @@ function AccountInner() {
     );
   }
 
+  /** Read first, then ask: the dialog counts exactly what it will cancel. */
   async function handleCancelAll() {
     if (!address || isReadOnly) return;
 
@@ -653,13 +663,13 @@ function AccountInner() {
       setError(tr("No active or paused mandates to cancel."));
       return;
     }
+    setError(null);
+    setCancelAllTargets(toCancel);
+  }
 
-    if (
-      !window.confirm(tr("This will cancel {0} mandate{1}. Continue?", { "0": toCancel.length, "1": toCancel.length !== 1 ? "s" : "" }),
-      )
-    ) {
-      return;
-    }
+  async function cancelAllConfirmed() {
+    const toCancel = cancelAllTargets;
+    if (!address || isReadOnly || !toCancel) return;
 
     setBusy("cancel-all");
     setError(null);
@@ -692,6 +702,7 @@ function AccountInner() {
       : "No mandates were cancelled";
 
     setDone(result);
+    setCancelAllTargets(null);
     await load();
     setBusy(null);
   }
@@ -992,6 +1003,7 @@ function AccountInner() {
         </Notice>
       )}
 
+      <ContractVersionNotice />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {info && (
         <Notice tone="info">
@@ -1076,9 +1088,10 @@ function AccountInner() {
             >
               Max wallet
             </button>
-            <button
-              type="button"
-              className="btn-primary"
+            <LoadingButton
+              variant="primary"
+              loading={busy === "deposit"}
+              loadingText={tr("Depositing…")}
               disabled={busy !== null || networkMismatch}
               onClick={() =>
                 void run("deposit", () =>
@@ -1091,11 +1104,12 @@ function AccountInner() {
                 )
               }
             >
-              {busy === "deposit" ?tr("Depositing…") :tr("Deposit")}
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
+              {tr("Deposit")}
+            </LoadingButton>
+            <LoadingButton
+              variant="ghost"
+              loading={busy === "withdraw"}
+              loadingText={tr("Withdrawing…")}
               disabled={busy !== null || networkMismatch || !withdrawCheck.ok}
               onClick={() =>
                 void run("withdraw", () =>
@@ -1108,8 +1122,8 @@ function AccountInner() {
                 )
               }
             >
-              {busy === "withdraw" ?tr("Withdrawing…") :tr("Withdraw")}
-            </button>
+              {tr("Withdraw")}
+            </LoadingButton>
           </div>
         </Panel>
       )}
@@ -1127,18 +1141,19 @@ function AccountInner() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className="btn-primary"
-                  disabled={busy !== null || networkMismatch}
-                  onClick={fundConfirmed}
-                >
-                  {busy === `fund-for-${fundFor}` ?tr("Funding…") :tr("Fund")}
-                </button>
-                <button
-                  type="button"
                   className="btn-ghost"
                   disabled={busy !== null}
                   onClick={() => setFundFor(null)}
                 >{tr("Cancel")}</button>
+                <LoadingButton
+                  variant="primary"
+                  loading={busy === `fund-for-${fundFor}`}
+                  loadingText={tr("Funding…")}
+                  disabled={busy !== null || networkMismatch}
+                  onClick={fundConfirmed}
+                >
+                  {tr("Fund")}
+                </LoadingButton>
               </div>
             </div>
           ) : (
@@ -1837,6 +1852,24 @@ function AccountInner() {
           </div>
         )}
       </Panel>
+
+      <ConfirmDialog
+        open={cancelAllTargets !== null}
+        onCancel={() => setCancelAllTargets(null)}
+        onConfirm={cancelAllConfirmed}
+        title={tr("Cancel {0} subscription{1}?", {
+          "0": cancelAllTargets?.length ?? 0,
+          "1": (cancelAllTargets?.length ?? 0) === 1 ? "" : "s",
+        })}
+        confirmLabel={tr("Cancel subscriptions")}
+        busy={busy === "cancel-all"}
+        busyLabel={tr("Cancelling…")}
+        danger
+      >
+        <p className="text-muted">
+          {tr("Every active or paused subscription listed below stops billing immediately. This cannot be undone.")}
+        </p>
+      </ConfirmDialog>
     </div>
   );
 }

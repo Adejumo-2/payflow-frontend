@@ -136,9 +136,8 @@
   "Completed": "Completed",
   "Confirm": "Confirm",
   "Confirm and sign": "Confirm and sign",
+  "Confirm cancellation": "Confirm cancellation",
   "Confirm cancellation?": "Confirm cancellation?",
-  "Confirm cancelling subscription #{0}": "Confirm cancelling subscription #{0}",
-  "Confirm plan deactivation": "Confirm plan deactivation",
   "Confirm refund": "Confirm refund",
   "Confirm: deactivate": "Confirm: deactivate",
   "Confirm: deactivate all": "Confirm: deactivate all",
@@ -618,7 +617,6 @@
   "Wrong network": "Wrong network",
   "XLM": "XLM",
   "Yearly": "Yearly",
-  "Yes, cancel": "Yes, cancel",
   "Yes, end": "Yes, end",
   "You": "You",
   "You are not the subscriber on this mandate.": "You are not the subscriber on this mandate.",
@@ -747,5 +745,7 @@
   "Confirm deactivation": "Confirm deactivation",
   "Cancel {0} subscription{1}?": "Cancel {0} subscription{1}?",
   "Cancel subscriptions": "Cancel subscriptions",
-  "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Every active or paused subscription listed below stops billing immediately. This cannot be undone."
+  "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Every active or paused subscription listed below stops billing immediately. This cannot be undone.",
+  "This subscription stops billing immediately. This cannot be undone.": "This subscription stops billing immediately. This cannot be undone.",
+  "Deactivate plan {0}": "Deactivate plan {0}"
 }

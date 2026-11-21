@@ -434,15 +434,15 @@ describe("AccountPage", () => {
 
     // The irreversible write has not happened yet.
     expect(payflowMock.cancel).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Keep" })).toBeTruthy();
     expect(
-      screen.getByRole("button", {
-        name: "Confirm cancelling subscription #7",
-      }),
+      screen.getByRole("dialog", { name: "Cancel subscription #7?" }),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Keep" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Confirm cancellation" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Keep" }));
     expect(payflowMock.cancel).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(
       screen.getByRole("button", { name: "Cancel subscription #7" }),
     ).toBeTruthy();
@@ -458,11 +458,7 @@ describe("AccountPage", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Cancel subscription #7" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Confirm cancelling subscription #7",
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
 
     await waitFor(() =>
       expect(payflowMock.cancel).toHaveBeenCalledWith(
@@ -472,6 +468,32 @@ describe("AccountPage", () => {
       ),
     );
     expect(payflowMock.cancel).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("keeps the dialog open with the error on a failed cancel, and lets a retry succeed", async () => {
+    payflowMock.vaultBalance.mockResolvedValue(0n);
+    payflowMock.cancel
+      .mockRejectedValueOnce(new Error("host error: insufficient fee"))
+      .mockResolvedValueOnce("c0ffee");
+    apiMock.mandatesOf.mockResolvedValue({ mandates: [mandate()] });
+
+    render(<AccountPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Cancel subscription #7" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Cancel subscription #7?" });
+    await waitFor(() =>
+      expect(dialog.textContent).toContain("host error: insufficient fee"),
+    );
+
+    // The dialog stayed open for a retry instead of being dismissed.
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
+    await waitFor(() => expect(payflowMock.cancel).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("keeps only one mandate in the confirming state at a time", async () => {
@@ -487,17 +509,10 @@ describe("AccountPage", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Cancel subscription #8" }));
 
-    expect(screen.getAllByRole("button", { name: "Keep" })).toHaveLength(1);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
     expect(
-      screen.getByRole("button", {
-        name: "Confirm cancelling subscription #8",
-      }),
+      screen.getByRole("dialog", { name: "Cancel subscription #8?" }),
     ).toBeTruthy();
-    expect(
-      screen.queryByRole("button", {
-        name: "Confirm cancelling subscription #7",
-      }),
-    ).toBeNull();
   });
 
   it("renders the next six charges and their running total", async () => {

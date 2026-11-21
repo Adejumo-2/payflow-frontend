@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import MerchantPage from "@/app/merchant/page";
 
 /**
@@ -617,5 +617,56 @@ describe("MerchantPage deactivate all plans", () => {
 
     await waitFor(() => expect(screen.getByText("RPC error")).toBeTruthy());
     expect(screen.queryByText("All active plans deactivated.")).toBeNull();
+  });
+
+  it("opens a per-plan deactivation dialog with the open-subscription impact text", async () => {
+    setupActivePlans();
+    render(<MerchantPage />);
+
+    await waitForPlans();
+    fireEvent.click(screen.getAllByRole("button", { name: "Deactivate" })[0]!);
+
+    const dialog = await screen.findByRole("dialog", { name: "Deactivate plan Plan 1?" });
+    expect(dialog.textContent).toContain("1 open subscription");
+  });
+
+  it("deactivates a single plan from its own dialog", async () => {
+    setupActivePlans();
+    payflowMock.setPlanActive.mockResolvedValue("tx-hash");
+
+    render(<MerchantPage />);
+
+    await waitForPlans();
+    fireEvent.click(screen.getAllByRole("button", { name: "Deactivate" })[0]!);
+
+    const dialog = await screen.findByRole("dialog", { name: "Deactivate plan Plan 1?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm: deactivate" }));
+
+    await waitFor(() =>
+      expect(payflowMock.setPlanActive).toHaveBeenCalledWith(MERCHANT, wallet.signXdr, 1, false),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("keeps the per-plan dialog open with the error on failure, and lets a retry succeed", async () => {
+    setupActivePlans();
+    payflowMock.setPlanActive
+      .mockRejectedValueOnce(new Error("host error: insufficient fee"))
+      .mockResolvedValueOnce("tx-hash");
+
+    render(<MerchantPage />);
+
+    await waitForPlans();
+    fireEvent.click(screen.getAllByRole("button", { name: "Deactivate" })[0]!);
+
+    const dialog = await screen.findByRole("dialog", { name: "Deactivate plan Plan 1?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm: deactivate" }));
+
+    await waitFor(() => expect(dialog.textContent).toContain("host error: insufficient fee"));
+
+    // Still open: a retry can be made without re-stating the confirmation.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm: deactivate" }));
+    await waitFor(() => expect(payflowMock.setPlanActive).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });

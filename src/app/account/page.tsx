@@ -2,7 +2,7 @@
 
 import { useI18n } from "@/i18n/provider";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 // `/base` is the SDK without the RPC client or transaction builder: StrKey is
@@ -321,37 +321,59 @@ function AccountInner() {
     // clear them before the new reads start so no stale row or export survives
     // a wallet switch. Clearing here (rather than in `load`) keeps the refresh
     // after a transaction from flashing the page back to skeletons.
-    setBalance(null);
-    setMandates(null);
-    setHistory(null);
-    setIndexerAvailable(false);
-    setMandatesFromApi(false);
-    setInfo(null);
-    setError(null);
-    setDone(null);
-    setExporting(false);
+    // Use startTransition to avoid synchronous setState warnings.
+    startTransition(() => {
+      setBalance(null);
+      setMandates(null);
+      setHistory(null);
+      setIndexerAvailable(false);
+      setMandatesFromApi(false);
+      setInfo(null);
+      setError(null);
+      setDone(null);
+      setExporting(false);
+    });
     void load();
   }, [load]);
+  // Use startTransition to batch setState calls and avoid synchronous render warnings
+  useEffect(() => {
+    startTransition(() => {
+      setConfirmCancel(null);
+      setPauseFor(null);
+      setFundFor(null);
+      setTransferFor(null);
+      setTransferTo("");
+      setReminderBusy(null);
+    });
+  }, [address]);
 
   // A wallet switch mid-flow must not leave another account's mandate in the
   // confirming state.
   useEffect(() => {
-    setConfirmCancel(null);
-    setPauseFor(null);
-    setFundFor(null);
-    setTransferFor(null);
-    setTransferTo("");
-    setReminderBusy(null);
+    // Use startTransition to avoid synchronous setState warnings.
+    startTransition(() => {
+      setConfirmCancel(null);
+      setPauseFor(null);
+      setFundFor(null);
+      setTransferFor(null);
+      setTransferTo("");
+      setReminderBusy(null);
+    });
   }, [address]);
 
   // Preferences belong to the connected subscriber, not the browser. Reading
   // them is silent: no permission prompt is allowed on page load.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address || typeof window === "undefined") {
-      setReminderPrefs({});
+      startTransition(() => {
+        setReminderPrefs({});
+      });
       return;
     }
-    setReminderPrefs(readReminderPrefs(window.localStorage, address));
+    startTransition(() => {
+      setReminderPrefs(readReminderPrefs(window.localStorage, address));
+    });
   }, [address]);
 
   // A mandate that ended — cancelled here, by the merchant, or settled to its
@@ -359,11 +381,15 @@ function AccountInner() {
   // through `mandateStatus`, so `["Cancelled"]` from contract state and
   // `"Cancelled"` from the indexer behave the same.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address || mandates === null || typeof window === "undefined") return;
-    const pruned = pruneEndedReminders(reminderPrefs, mandates);
-    if (pruned.removed.length === 0) return;
-    setReminderPrefs(pruned.prefs);
-    saveReminderPrefs(window.localStorage, address, pruned.prefs);
+    startTransition(() => {
+      const pruned = pruneEndedReminders(reminderPrefs, mandates);
+      if (pruned.removed.length > 0) {
+        setReminderPrefs(pruned.prefs);
+        saveReminderPrefs(window.localStorage, address, pruned.prefs);
+      }
+    });
   }, [address, mandates, reminderPrefs]);
 
   /**
@@ -510,8 +536,11 @@ function AccountInner() {
   // payflow-contract#29 cannot service the write, so offering it would only
   // fail at signing time.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address) {
-      setFundSupport(null);
+      startTransition(() => {
+        setFundSupport(null);
+      });
       return;
     }
     let live = true;
@@ -530,13 +559,18 @@ function AccountInner() {
   // a contract that predates it cannot service the write, so offering it would
   // only fail at signing time.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address || mandates === null) {
-      setTransferSupport(null);
+      startTransition(() => {
+        setTransferSupport(null);
+      });
       return;
     }
     // The deployed contract either carries `pending_subscriber` on its
     // mandates or it does not; the loaded mandates already say which.
-    setTransferSupport(mandates.some((m) => mandateSupportsTransfer(m)));
+    startTransition(() => {
+      setTransferSupport(mandates.some((m) => mandateSupportsTransfer(m)));
+    });
   }, [address, mandates]);
 
   // Identify classic asset tokens in use by the subscriber's mandates

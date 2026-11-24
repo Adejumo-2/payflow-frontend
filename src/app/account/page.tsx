@@ -83,6 +83,10 @@ import { AmountInput } from "@/components/AmountInput";
 import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 import { observeContractRecord } from "@/lib/contract-compat";
 import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { SyncLagIndicator } from "@/components/SyncLagIndicator";
+import { Money } from "@/components/Money";
+import { NotificationCentre } from "@/components/NotificationCentre";
+import { evaluateSubscriberNotifications } from "@/lib/notifications";
 import { LoadingButton } from "@/components/LoadingButton";
 import {
   Badge,
@@ -1041,6 +1045,18 @@ function AccountInner() {
       )}
 
       <ContractVersionNotice />
+      <SyncLagIndicator />
+      <NotificationCentre
+        address={address}
+        notifications={evaluateSubscriberNotifications({
+          runway,
+          mandates,
+          vaultMeta,
+        })}
+        loading={mandates === null || balance === null}
+        defaultOpen={Boolean(runway?.isLow && runway.hasActiveMandates)}
+        className="mb-4"
+      />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {info && (
         <Notice tone="info">
@@ -1277,13 +1293,12 @@ function AccountInner() {
                     <TxLink hash={event.tx_hash} />
                   </div>
                   <div className="text-right">
-                    <span
-                      className={`font-semibold tabular-nums ${
-                        isCredit ? "text-accent" : "text-danger"
-                      }`}
-                    >
-                      {eventAmount} {vaultMeta.symbol}
-                    </span>
+                    <Money
+                      amount={isCredit ? event.amount : `-${event.amount}`}
+                      meta={vaultMeta}
+                      signDisplay="always"
+                      tone="auto"
+                    />
                     <div className="text-xs text-muted">{tr("ledger")}{" "}{event.ledger}</div>
                   </div>
                 </div>

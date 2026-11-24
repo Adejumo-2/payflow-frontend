@@ -1,10 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/i18n/provider";
 
-
-
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiPlan, type ApiWebhook, type MerchantSummary, type StreamEvent } from "@/lib/api";
@@ -64,7 +62,7 @@ import{ feeSplit, fromStroops, type FeeSplit, type TokenMeta } from "@/lib/forma
 import { metaFor, useTokenMetas } from "@/lib/token";
 import { supportsTrials, TRIAL_OPTIONS } from "@/lib/trial";
 import { CUSTOM_PERIOD, DEFAULT_PERIOD, PERIOD_PRESETS, PERIOD_UNITS, checkCustomPeriod, checkPeriodSeconds, type PeriodCheck } from "@/lib/period";
-import { countOpenMandates } from "@/lib/plans";
+import { countOpenMandates, filterAndSortPlans, type PlanActiveOption } from "@/lib/plans";
 import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/price";
 import { AmountInput } from "@/components/AmountInput";
 import { CopyButton } from "@/components/CopyButton";
@@ -83,6 +81,7 @@ function validatePlanNameLocal(name: string): string | null {
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { SectionShortcuts } from "@/components/SectionShortcuts";
 import { AddressLink, Badge, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
+import { Search } from "@/components/Search";
 import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 import { observeContractRecord } from "@/lib/contract-compat";
 import { ContractVersionNotice } from "@/components/ContractVersionNotice";
@@ -995,6 +994,11 @@ export default function MerchantPage() {
   const { checkAmount, t: tr, formatPeriod, translateMessage, unitLabel, trialBadge, formatTokenValue, discountBadge, formatUsdString, formatNumber } = useI18n();
   const { address, networkMismatch, signXdr, connect, connecting } = useWallet();
   const [plans, setPlans] = useState<ApiPlan[] | null>(null);
+  // Filter state for the merchant's own plan listing. Search is by name, and
+  // the token/status filters narrow the same list without hiding its counts.
+  const [planQuery, setPlanQuery] = useState("");
+  const [planToken, setPlanToken] = useState("all");
+  const [planActive, setPlanActive] = useState<PlanActiveOption>("all");
   const [mandates, setMandates] = useState<ApiMandate[] | null>(null);
   const [unpaidMandates, setUnpaidMandates] = useState<import("@/lib/chain").UnpaidMandate[] | null>(null);
   const [subscribersTab, setSubscribersTab] = useState<"all" | "unpaid">("all");
@@ -1152,6 +1156,25 @@ export default function MerchantPage() {
     ...(mandates ?? []).map((m) => m.token ?? config.contracts.token),
   ]);
   const tokenMeta = metaFor(metas, selectedToken);
+
+  const filteredPlans = useMemo(
+    () =>
+      filterAndSortPlans(plans ?? [], {
+        // Keep the order the page has always shown merchants (oldest first);
+        // the filters only narrow the list.
+        sort: "oldest",
+        query: planQuery,
+        token: planToken,
+        active: planActive,
+      }),
+    [plans, planQuery, planToken, planActive],
+  );
+  /** Tokens present on this merchant's plans, keeping a URL-selected one visible. */
+  const planTokenOptions = useMemo(() => {
+    const ids = [...new Set((plans ?? []).map((plan) => plan.token))];
+    if (planToken !== "all" && !ids.includes(planToken)) ids.push(planToken);
+    return ids;
+  }, [plans, planToken]);
 
   // The contract rejects a name over MAX_NAME_LEN bytes, so catch it here
   // rather than letting the user pay for a transaction that will fail.
@@ -2238,8 +2261,70 @@ export default function MerchantPage() {
             }
           >{tr("Use the form above to publish your first plan — it is written straight to the contract, so it works with or without the indexer. Subscribers can open a mandate against it as soon as it confirms.")}</Empty>
         ) : (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-end gap-3 rounded-lg border border-edge bg-surface/50 p-3">
+              <div className="w-full sm:w-auto sm:min-w-[14rem] sm:flex-1">
+                <Search
+                  id="merchant-plan-search"
+                  value={planQuery}
+                  onChange={setPlanQuery}
+                  label={tr("Search plans by name")}
+                  placeholder={tr("Search by name")}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label htmlFor="merchant-plan-token" className="whitespace-nowrap text-sm font-medium text-muted">{tr("Token:")}</label>
+                <select
+                  id="merchant-plan-token"
+                  className="input py-1 px-2.5 text-sm"
+                  value={planToken}
+                  onChange={(e) => setPlanToken(e.target.value)}
+                >
+                  <option value="all">{tr("All tokens")}</option>
+                  {planTokenOptions.map((id) => (
+                    <option key={id} value={id}>
+                      {metaFor(metas, id).symbol}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label htmlFor="merchant-plan-active" className="whitespace-nowrap text-sm font-medium text-muted">{tr("Status:")}</label>
+                <select
+                  id="merchant-plan-active"
+                  className="input py-1 px-2.5 text-sm"
+                  value={planActive}
+                  onChange={(e) => setPlanActive(e.target.value as PlanActiveOption)}
+                >
+                  <option value="all">{tr("All plans")}</option>
+                  <option value="active">{tr("Active")}</option>
+                  <option value="inactive">{tr("Inactive")}</option>
+                </select>
+              </div>
+
+              <span className="ml-auto text-xs text-muted" aria-live="polite">{tr("Showing")}{" "}{formatNumber(filteredPlans.length)}{" "}{tr("of")}{" "}{formatNumber(plans.length)}{" "}{tr("plans")}</span>
+            </div>
+
+            {filteredPlans.length === 0 ? (
+              <Empty
+                title={tr("No plans match these filters")}
+                action={
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => {
+                      setPlanQuery("");
+                      setPlanToken("all");
+                      setPlanActive("all");
+                    }}
+                  >{tr("Reset filters")}</button>
+                }
+              >{tr("No plan name, token or status matches the current filters. Clear them to see every plan.")}</Empty>
+            ) : (
           <VirtualList
-            items={plans}
+            items={filteredPlans}
             threshold={100}
             itemHeight={180}
             keyExtractor={(p) => p.id}
@@ -2491,6 +2576,8 @@ export default function MerchantPage() {
               );
             }}
           />
+            )}
+          </div>
         )}
       </Panel>
 

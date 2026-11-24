@@ -11,10 +11,10 @@ const DAY = 86_400_000;
 const at = (deltaMs: number) => Math.floor((NOW + deltaMs) / 1000);
 
 describe("formatWhen: English", () => {
-  it("counts days up to a week, then weeks, months and years", () => {
+  it("counts days up to a fortnight, then weeks, months and years", () => {
     expect(formatWhen(at(3 * DAY), "en", NOW)).toBe("in 3 days");
-    expect(formatWhen(at(6 * DAY), "en", NOW)).toBe("in 6 days");
-    expect(formatWhen(at(7 * DAY), "en", NOW)).toBe("in 1 week");
+    expect(formatWhen(at(14 * DAY), "en", NOW)).toBe("in 14 days");
+    expect(formatWhen(at(15 * DAY), "en", NOW)).toBe("in 2 weeks");
     expect(formatWhen(at(21 * DAY), "en", NOW)).toBe("in 3 weeks");
     expect(formatWhen(at(30 * DAY), "en", NOW)).toBe("in 1 month");
     expect(formatWhen(at(90 * DAY), "en", NOW)).toBe("in 3 months");
@@ -24,7 +24,7 @@ describe("formatWhen: English", () => {
 
   it("uses the same scale for the past", () => {
     expect(formatWhen(at(-3 * DAY), "en", NOW)).toBe("3 days ago");
-    expect(formatWhen(at(-14 * DAY), "en", NOW)).toBe("2 weeks ago");
+    expect(formatWhen(at(-21 * DAY), "en", NOW)).toBe("3 weeks ago");
     expect(formatWhen(at(-120 * DAY), "en", NOW)).toBe("4 months ago");
   });
 
@@ -40,7 +40,7 @@ describe("formatWhen: French", () => {
     expect(formatWhen(at(3 * DAY), "fr", NOW)).toBe("dans 3 jours");
     expect(formatWhen(at(DAY), "fr", NOW)).toBe("dans 1 jour");
     expect(formatWhen(at(-3 * DAY), "fr", NOW)).toBe("il y a 3 jours");
-    expect(formatWhen(at(14 * DAY), "fr", NOW)).toBe("dans 2 semaines");
+    expect(formatWhen(at(21 * DAY), "fr", NOW)).toBe("dans 3 semaines");
     expect(formatWhen(at(90 * DAY), "fr", NOW)).toBe("dans 3 mois");
     expect(formatWhen(at(800 * DAY), "fr", NOW)).toBe("dans 2 ans");
     expect(formatWhen(at(3 * 3_600_000), "fr", NOW)).toBe("dans 3 heures");

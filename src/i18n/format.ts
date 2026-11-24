@@ -28,7 +28,9 @@ function relativeUnit(minutes: number, hours: number): [number, Intl.RelativeTim
   if (minutes < 60) return [minutes, "minute"];
   if (hours < 24) return [hours, "hour"];
   const days = Math.round(hours / 24);
-  if (days < 7) return [days, "day"];
+  // Up to a fortnight stays in days, so trial lengths such as "in 14 days"
+  // read as they always have.
+  if (days <= 14) return [days, "day"];
   if (days < 30) return [Math.round(days / 7), "week"];
   if (days < 365) return [Math.round(days / 30), "month"];
   return [Math.round(days / 365), "year"];

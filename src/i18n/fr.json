@@ -747,5 +747,11 @@
   "Cancel subscriptions": "Annuler les abonnements",
   "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Chaque abonnement actif ou en pause ci-dessous cesse immédiatement d’être facturé. Cette action est irréversible.",
   "This subscription stops billing immediately. This cannot be undone.": "Cet abonnement cesse immédiatement d’être facturé. Cette action est irréversible.",
-  "Deactivate plan {0}": "Désactiver l’offre {0}"
+  "Deactivate plan {0}": "Désactiver l’offre {0}",
+  "Last section": "Dernière section",
+  "First section": "Première section",
+  "Section {0} of {1}: {2}": "Section {0} sur {1} : {2}",
+  "Press": "Appuyez sur",
+  "or": "ou",
+  "to jump between sections.": "pour passer d’une section à l’autre."
 }

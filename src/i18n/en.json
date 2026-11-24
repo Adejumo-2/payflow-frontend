@@ -747,5 +747,11 @@
   "Cancel subscriptions": "Cancel subscriptions",
   "Every active or paused subscription listed below stops billing immediately. This cannot be undone.": "Every active or paused subscription listed below stops billing immediately. This cannot be undone.",
   "This subscription stops billing immediately. This cannot be undone.": "This subscription stops billing immediately. This cannot be undone.",
-  "Deactivate plan {0}": "Deactivate plan {0}"
+  "Deactivate plan {0}": "Deactivate plan {0}",
+  "Last section": "Last section",
+  "First section": "First section",
+  "Section {0} of {1}: {2}": "Section {0} of {1}: {2}",
+  "Press": "Press",
+  "or": "or",
+  "to jump between sections.": "to jump between sections."
 }

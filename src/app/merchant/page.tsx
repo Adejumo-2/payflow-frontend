@@ -81,6 +81,7 @@ function validatePlanNameLocal(name: string): string | null {
 }
 
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
+import { SectionShortcuts } from "@/components/SectionShortcuts";
 import { AddressLink, Badge, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
 import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 import { observeContractRecord } from "@/lib/contract-compat";
@@ -1857,6 +1858,7 @@ export default function MerchantPage() {
 
   return (
     <div className="space-y-6">
+      <SectionShortcuts />
       {onboardingDismissed === false && (
         <OnboardingChecklist
           address={address}

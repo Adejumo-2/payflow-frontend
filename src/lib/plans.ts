@@ -2,6 +2,7 @@ import type { ApiPlan } from "./api";
 
 export type PlanSortOption =
   | "newest"
+  | "oldest"
   | "price_asc"
   | "price_desc"
   | "period_asc"
@@ -115,6 +116,8 @@ export function filterAndSortPlans(
         const diff = b.period - a.period;
         return diff !== 0 ? diff : b.id - a.id;
       }
+      case "oldest":
+        return a.id - b.id;
       case "newest":
       default:
         return b.id - a.id;

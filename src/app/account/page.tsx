@@ -44,16 +44,11 @@ const DEFAULT_TOKENS: readonly ConfiguredToken[] = [
   },
 ];
 import { nextChargeAmount, remainingDiscountCharges } from "@/lib/discount";
-import {
-  mandateIsPastDue,
-  mandatePastDueUntil,
-  mandatePauseUntil,
-  mandateSupportsSpendLimit,
-  payflow,
-  server,
-  vaultSupportsDepositFor,
-  validateRecipient,
-} from "@/lib/payflow";
+import { mandateIsPastDue, mandatePastDueUntil, mandatePauseUntil, mandateSupportsSpendLimit, validateRecipient } from "@/lib/payflow-core";
+// The SDK-backed contract module loads on demand, so the Stellar SDK
+// stays out of this route's first-load bundle.
+import { loadPayflow, payflow, server } from "@/lib/lazy-payflow";
+import { mandatePendingTransfer, mandateSupportsTransfer } from "@/lib/payflow-core";
 import { groupMandatesByStatus, mandateStatus } from "@/lib/mandate-status";
 import { createdAtDate, paymentDateRange, paymentRow, sortPaymentsNewestFirst } from "@/lib/payments";
 import {
@@ -461,16 +456,19 @@ function AccountInner() {
     // clear them before the new reads start so no stale row or export survives
     // a wallet switch. Clearing here (rather than in `load`) keeps the refresh
     // after a transaction from flashing the page back to skeletons.
-    setBalance(null);
-    setMandates(null);
-    setHistory(null);
-    setPayments({ status: "loading" });
-    setIndexerAvailable(false);
-    setMandatesFromApi(false);
-    setInfo(null);
-    setError(null);
-    setDone(null);
-    setExporting(false);
+    // Use startTransition to avoid synchronous setState warnings.
+    startTransition(() => {
+      setBalance(null);
+      setMandates(null);
+      setHistory(null);
+      setPayments({ status: "loading" });
+      setIndexerAvailable(false);
+      setMandatesFromApi(false);
+      setInfo(null);
+      setError(null);
+      setDone(null);
+      setExporting(false);
+    });
     void load();
   }, [load]);
   // Use startTransition to batch setState calls and avoid synchronous render warnings
@@ -2178,6 +2176,24 @@ function AccountInner() {
         state={payments}
         onRetry={() => setPaymentsReload((value) => value + 1)}
       />
+
+      <ConfirmDialog
+        open={cancelAllTargets !== null}
+        onCancel={() => setCancelAllTargets(null)}
+        onConfirm={cancelAllConfirmed}
+        title={tr("Cancel {0} subscription{1}?", {
+          "0": cancelAllTargets?.length ?? 0,
+          "1": (cancelAllTargets?.length ?? 0) === 1 ? "" : "s",
+        })}
+        confirmLabel={tr("Cancel subscriptions")}
+        busy={busy === "cancel-all"}
+        busyLabel={tr("Cancelling…")}
+        danger
+      >
+        <p className="text-muted">
+          {tr("Every active or paused subscription listed below stops billing immediately. This cannot be undone.")}
+        </p>
+      </ConfirmDialog>
     </div>
   );
 }

@@ -1,6 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/i18n/provider";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -67,8 +66,33 @@ import { countOpenMandates, filterAndSortPlans, type PlanActiveOption } from "@/
 import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/price";
 import { AmountInput } from "@/components/AmountInput";
 import { CopyButton } from "@/components/CopyButton";
-import { AddressLink, Badge, Dialog, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
+import { QrCode } from "@/components/QrCode";
+// Mirrors payflow.validatePlanName, kept here so the form can check a name
+// without the SDK-backed module in this route's first-load bundle.
+function validatePlanNameLocal(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return "Enter a plan name.";
+  if (nameByteLength(trimmed) > MAX_NAME_LEN) {
+    return `Too long — ${MAX_NAME_LEN} bytes maximum.`;
+  }
+  return null;
+}
+
+import { OnboardingChecklist } from "@/components/OnboardingChecklist";
+import { AddressLink, Badge, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, TxLink } from "@/components/ui";
 import { Search } from "@/components/Search";
+import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
+import { observeContractRecord } from "@/lib/contract-compat";
+import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { subscribeLink } from "@/lib/share";
+
+const PERIOD_OPTIONS = [
+  { label: "Every minute (demo)", value: 60 },
+  { label: "Daily", value: 86_400 },
+  { label: "Weekly", value: 604_800 },
+  { label: "Monthly", value: 2_592_000 },
+  { label: "Yearly", value: 31_536_000 },
+];
 
 /** How far back the revenue chart looks, in days. */
 const REVENUE_WINDOW_DAYS = 90;
@@ -1131,6 +1155,9 @@ export default function MerchantPage() {
   const filteredPlans = useMemo(
     () =>
       filterAndSortPlans(plans ?? [], {
+        // Keep the order the page has always shown merchants (oldest first);
+        // the filters only narrow the list.
+        sort: "oldest",
         query: planQuery,
         token: planToken,
         active: planActive,

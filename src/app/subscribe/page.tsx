@@ -29,7 +29,13 @@ import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/pri
 import { checkChargeLimit, confirmationFor } from "@/lib/subscribe-confirmation";
 import { observeContractRecord } from "@/lib/contract-compat";
 import { Empty, MerchantAccount, Notice, Panel, SkeletonPlanCards, TxLink } from "@/components/ui";
+import { useAction } from "@/lib/useAction";
 import { Search } from "@/components/Search";
+import { SubscriberGuide } from "@/components/SubscriberGuide";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { DepositCoverageInput } from "@/components/DepositCoverageInput";
+import { LoadingButton } from "@/components/LoadingButton";
 
 /** Remaining seats in words, without inventing a count the source cannot provide. */
 function seatsLabel(plan: ApiPlan, now: number, tr: Translation): string {
@@ -487,13 +493,17 @@ function SubscribeInner() {
   );
   const sharedMissing = shared.kind === "plan" && plans !== null && sharedPlan === null;
   const filteredPlans = useMemo(() => {
+    // A link that names a plan shows that plan and nothing else: falling back
+    // to the catalogue would quietly offer a different plan from the one the
+    // link promised.
+    if (shared.kind === "plan") return sharedPlan ? [sharedPlan] : [];
     return filterAndSortPlans(active, {
       sort,
       period,
       query,
       token: tokenFilter,
     });
-  }, [active, sort, period, query, tokenFilter]);
+  }, [active, sort, period, query, tokenFilter, shared, sharedPlan]);
   /** Tokens present in the catalogue, keeping the URL-selected one visible. */
   const tokenOptions = useMemo(() => {
     const ids = [...new Set(active.map((plan) => plan.token))];

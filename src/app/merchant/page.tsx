@@ -86,6 +86,10 @@ import { AddressLink, Badge, Empty, Notice, Panel, SkeletonRows, Stat, TimeAgo, 
 import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 import { observeContractRecord } from "@/lib/contract-compat";
 import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { SyncLagIndicator } from "@/components/SyncLagIndicator";
+import { Money } from "@/components/Money";
+import { NotificationCentre } from "@/components/NotificationCentre";
+import { evaluateMerchantNotifications } from "@/lib/notifications";
 import { subscribeLink } from "@/lib/share";
 
 const PERIOD_OPTIONS = [
@@ -943,7 +947,7 @@ function RefundForm({
   return (
     <div className="mt-3 rounded-lg border border-edge p-3">
       <p className="text-sm font-medium">{tr("Issue a refund")}</p>
-      <p className="mt-1 text-xs text-muted">{tr("Refund up to")}{" "}{formatAmount(maxRefundStroops, meta)}{" "}{tr("(what you received net of fees).")}</p>
+      <p className="mt-1 text-xs text-muted">{tr("Refund up to")}{" "}<Money amount={maxRefundStroops} meta={meta} />{" "}{tr("(what you received net of fees).")}</p>
       <div className="mt-2 flex flex-wrap items-end gap-3">
         <div className="min-w-[12rem] flex-1">
           <label className="label" htmlFor="refund-amount">{tr("Amount (")}{meta.symbol})
@@ -1953,6 +1957,18 @@ export default function MerchantPage() {
       </div>
 
       <ContractVersionNotice />
+      <SyncLagIndicator />
+      <NotificationCentre
+        address={address}
+        notifications={evaluateMerchantNotifications({
+          unpaidMandates,
+          tokenMeta,
+          onSelectUnpaidTab: () => setSubscribersTab("unpaid"),
+        })}
+        loading={unpaidMandates === null}
+        defaultOpen={Boolean(unpaidMandates && unpaidMandates.length > 0)}
+        className="mb-4"
+      />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {deactivateAllDone && (
         <Notice tone="ok">{tr("All active plans deactivated.")}</Notice>

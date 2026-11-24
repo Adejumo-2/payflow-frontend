@@ -77,11 +77,11 @@ body {
   }
   .input {
     @apply w-full rounded-lg border border-edge bg-ink px-3 py-2 text-sm text-fg
-      outline-none placeholder:text-muted focus:border-accent/60;
+      outline-none placeholder:text-muted focus:border-accent/60 focus-visible:ring-2 focus-visible:ring-accent/40;
   }
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm
-      font-medium transition disabled:cursor-not-allowed disabled:opacity-40;
+      font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink disabled:cursor-not-allowed disabled:opacity-40;
   }
   .btn-primary {
     @apply btn bg-accent text-ink hover:bg-accent/90;
@@ -97,10 +97,31 @@ body {
   }
 }
 
+/*
+ * Respect the reader's reduced-motion preference.
+ *
+ * Skeletons already honour this, but charts and other transitions were
+ * still animating. Collapsing animation and transition durations to near-zero
+ * disables them effectively without having to audit every component.
+ * Chart libraries that animate via JS/SVG attributes also need their own
+ * animation flag disabled; see the reduced-motion handling in chart components.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @media print {
   body {
     background-color: #ffffff !important;
     color: #000000 !important;
   }
 }
-

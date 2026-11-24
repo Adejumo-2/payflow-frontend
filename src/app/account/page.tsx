@@ -2,10 +2,12 @@
 
 import { useI18n } from "@/i18n/provider";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { StrKey } from "@stellar/stellar-sdk";
+// `/base` is the SDK without the RPC client or transaction builder: StrKey is
+// a self-contained checksum helper, so importing it must not cost a bundle.
+import { StrKey } from "@stellar/stellar-sdk/base";
 import { api, type ApiMandate, type ApiVaultEvent, type StreamEvent } from "@/lib/api";
 import { buildUpcomingChargesCalendar, CALENDAR_FILENAME } from "@/lib/calendar";
 import {
@@ -17,7 +19,7 @@ import {
 import {
   chainMandatesOf,
   sortVaultEventsNewestFirst,
-  vaultEventAmount,
+
   vaultEventLabel,
   vaultEventTone,
 } from "@/lib/chain";
@@ -75,13 +77,25 @@ import {
   type ReminderPrefs,
   type ScheduledReminder,
 } from "@/lib/reminders";
-import{ fromStroops, minPauseDate, parsePauseDate, resumeDate, shortAddress } from "@/lib/format";
+import {
+  checkWithdraw,
+  fromStroops,
+  minPauseDate,
+  parsePauseDate,
+  resumeDate,
+  shortAddress,
+  maxDeposit,
+} from "@/lib/format";
 import { buildChargeSchedule, chargeShortfall } from "@/lib/schedule";
 import { computeVaultRunway } from "@/lib/runway";
 
 import { loadTokenMeta, metaFor, useTokenMetas } from "@/lib/token";
 import { VirtualList } from "@/components/VirtualList";
 import { AmountInput } from "@/components/AmountInput";
+import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
+import { observeContractRecord } from "@/lib/contract-compat";
+import { ContractVersionNotice } from "@/components/ContractVersionNotice";
+import { LoadingButton } from "@/components/LoadingButton";
 import {
   Badge,
   Empty,
@@ -220,7 +234,7 @@ function PaymentHistoryPanel({
 }
 
 function AccountInner() {
-  const { checkAmount, t: tr, formatDate, parseAmount, formatAmount, formatPeriod, translateMessage, describeTrialEnd, discountBadge, formatTokenValue, formatNumber } = useI18n();
+  const { checkAmount, t: tr, formatDate, parseAmount, formatAmount, formatPeriod, translateMessage, describeTrialEnd, discountBadge, formatTokenValue, formatNumber, localeTag } = useI18n();
   const searchParams = useSearchParams();
   const paramAddress = searchParams?.get("address");
   const targetAddress =
@@ -228,7 +242,8 @@ function AccountInner() {
       ? paramAddress.trim()
       : null;
 
-  const { address, networkMismatch, signXdr, connect, connecting } = useWallet();
+  const { address, networkMismatch, signXdr, connect, connecting, refreshAccount } =
+    useWallet();
 
   // The account whose data is displayed on screen
   const viewAddress = targetAddress ?? address;
@@ -244,14 +259,26 @@ function AccountInner() {
   const [paymentsReload, setPaymentsReload] = useState(0);
   const [indexerAvailable, setIndexerAvailable] = useState(false);
   const [amount, setAmount] = useState("");
+  // The wallet reports the native balance through its account state; a
+  // balance it has not read yet is null, not zero.
+  const { account: nativeAccount } = useWallet();
+  const nativeBalance =
+    nativeAccount?.state === "loaded" ? nativeAccount.account.balance : null;
   const [busy, setBusy] = useState<string | null>(null);
   // Cancelling is permanent, so the first click only reveals Keep/Confirm.
   const [confirmCancel, setConfirmCancel] = useState<number | null>(null);
+  // The mandates a "Cancel all" press would cancel, once they are loaded.
+  // Keeping them in state lets the standard confirmation dialog replace the
+  // unstyled `window.confirm` that used to guard this irreversible batch.
+  const [cancelAllTargets, setCancelAllTargets] = useState<ApiMandate[] | null>(null);
   // The mandate whose date picker is open, and the date typed into it.
   const [pauseFor, setPauseFor] = useState<number | null>(null);
   const [pauseDate, setPauseDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [capFor, setCapFor] = useState<number | null>(null);
+  const [capAmount, setCapAmount] = useState("");
+  const [capError, setCapError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   // Whether the mandate list came from the indexer. Payment history lives only
@@ -264,6 +291,13 @@ function AccountInner() {
   const [fundAmount, setFundAmount] = useState("");
   // The recipient awaiting a second-click confirmation — one at a time.
   const [fundFor, setFundFor] = useState<string | null>(null);
+  // The mandate whose transfer form is open, and the new address typed into
+  // it. Like `confirmCancel`, one at a time keeps the pending write clear.
+  const [transferFor, setTransferFor] = useState<number | null>(null);
+  const [transferTo, setTransferTo] = useState("");
+  // Whether the deployed mandate contract supports the two-step transfer
+  // (payflow-contract#68). null while the probe is in flight.
+  const [transferSupport, setTransferSupport] = useState<boolean | null>(null);
 
   // Track who paused each mandate: "subscriber" | "merchant" | undefined
   // Updated by the SSE stream when available.
@@ -308,8 +342,22 @@ function AccountInner() {
   const fundAmountCheck = checkAmount(fundAmount, vaultMeta.decimals);
   const fundStroops = fundAmountCheck.ok ? fundAmountCheck.stroops : 0n;
 
+  /** Whether the new address typed into a transfer form is a valid G… StrKey. */
+  const transferDisplayError = transferTo.trim()
+    ? validateRecipient(transferTo)
+    : null;
+
+  /** Whether the amount can be withdrawn right now: parses and fits the vault. */
+  const withdrawCheck = checkWithdraw(amount, balance, vaultMeta.decimals, localeTag);
+  // The amount field shows its own message for a malformed entry; anything
+  // else (too large for the balance, balance still loading) is the
+  // withdrawal's to explain, so only one message is on screen at a time.
+  const withdrawError = amount.trim() !== "" && !withdrawCheck.ok ? withdrawCheck.message : null;
+
   // Source account for simulation
   const source = address ?? config.readSource;
+
+  // Load function defined early so it can be referenced by the SSE stream hook
   const load = useCallback(async () => {
     addressRef.current = viewAddress;
     if (!viewAddress) return;
@@ -325,6 +373,7 @@ function AccountInner() {
     if (bal.status === "fulfilled") setBalance(bal.value);
 
     if (res.status === "fulfilled" && res.value) {
+      res.value.mandates.forEach((mandate) => observeContractRecord("mandate", mandate));
       setMandates(res.value.mandates);
       setMandatesFromApi(true);
     } else {
@@ -355,11 +404,12 @@ function AccountInner() {
     }
 
     // Check classic asset trustlines for mandates in other tokens
-    if (who && configuredTokens.length > 0 && typeof payflow.checkTrustline === "function") {
+    if (who && configuredTokens.length > 0) {
+      const { checkTrustline } = await loadPayflow();
       const missing: ConfiguredToken[] = [];
       for (const tok of configuredTokens) {
         if (tok.classicAsset) {
-          const hasTrust = await payflow.checkTrustline(
+          const hasTrust = await checkTrustline(
             who,
             tok.classicAsset.code,
             tok.classicAsset.issuer,
@@ -423,6 +473,17 @@ function AccountInner() {
     setExporting(false);
     void load();
   }, [load]);
+  // Use startTransition to batch setState calls and avoid synchronous render warnings
+  useEffect(() => {
+    startTransition(() => {
+      setConfirmCancel(null);
+      setPauseFor(null);
+      setFundFor(null);
+      setTransferFor(null);
+      setTransferTo("");
+      setReminderBusy(null);
+    });
+  }, [address]);
 
   /**
    * Past charges for the receipt list.
@@ -511,20 +572,30 @@ function AccountInner() {
   // A wallet switch mid-flow must not leave another account's mandate in the
   // confirming state.
   useEffect(() => {
-    setConfirmCancel(null);
-    setPauseFor(null);
-    setFundFor(null);
-    setReminderBusy(null);
+    // Use startTransition to avoid synchronous setState warnings.
+    startTransition(() => {
+      setConfirmCancel(null);
+      setPauseFor(null);
+      setFundFor(null);
+      setTransferFor(null);
+      setTransferTo("");
+      setReminderBusy(null);
+    });
   }, [address]);
 
   // Preferences belong to the connected subscriber, not the browser. Reading
   // them is silent: no permission prompt is allowed on page load.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address || typeof window === "undefined") {
-      setReminderPrefs({});
+      startTransition(() => {
+        setReminderPrefs({});
+      });
       return;
     }
-    setReminderPrefs(readReminderPrefs(window.localStorage, address));
+    startTransition(() => {
+      setReminderPrefs(readReminderPrefs(window.localStorage, address));
+    });
   }, [address]);
 
   // A mandate that ended — cancelled here, by the merchant, or settled to its
@@ -532,11 +603,15 @@ function AccountInner() {
   // through `mandateStatus`, so `["Cancelled"]` from contract state and
   // `"Cancelled"` from the indexer behave the same.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address || mandates === null || typeof window === "undefined") return;
-    const pruned = pruneEndedReminders(reminderPrefs, mandates);
-    if (pruned.removed.length === 0) return;
-    setReminderPrefs(pruned.prefs);
-    saveReminderPrefs(window.localStorage, address, pruned.prefs);
+    startTransition(() => {
+      const pruned = pruneEndedReminders(reminderPrefs, mandates);
+      if (pruned.removed.length > 0) {
+        setReminderPrefs(pruned.prefs);
+        saveReminderPrefs(window.localStorage, address, pruned.prefs);
+      }
+    });
   }, [address, mandates, reminderPrefs]);
 
   /**
@@ -683,18 +758,42 @@ function AccountInner() {
   // payflow-contract#29 cannot service the write, so offering it would only
   // fail at signing time.
   useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
     if (!address) {
-      setFundSupport(null);
+      startTransition(() => {
+        setFundSupport(null);
+      });
       return;
     }
     let live = true;
-    void vaultSupportsDepositFor(address).then((supported) => {
-      if (live) setFundSupport(supported);
-    });
+    void loadPayflow()
+      .then((mod) => mod.vaultSupportsDepositFor(address))
+      .then((supported: boolean) => {
+        if (live) setFundSupport(supported);
+      });
     return () => {
       live = false;
     };
   }, [address]);
+
+  // Probe whether the deployed mandate contract carries the two-step transfer
+  // (payflow-contract#68). The control stays hidden until the contract answers:
+  // a contract that predates it cannot service the write, so offering it would
+  // only fail at signing time.
+  useEffect(() => {
+    // Use startTransition to avoid synchronous setState warnings.
+    if (!address || mandates === null) {
+      startTransition(() => {
+        setTransferSupport(null);
+      });
+      return;
+    }
+    // The deployed contract either carries `pending_subscriber` on its
+    // mandates or it does not; the loaded mandates already say which.
+    startTransition(() => {
+      setTransferSupport(mandates.some((m) => mandateSupportsTransfer(m)));
+    });
+  }, [address, mandates]);
 
   // Identify classic asset tokens in use by the subscriber's mandates
   const classicTokens = useMemo(() => {
@@ -709,10 +808,11 @@ function AccountInner() {
       setMissingTrustlines([]);
       return;
     }
+    const { checkTrustline } = await loadPayflow();
     const missing: ConfiguredToken[] = [];
     for (const t of classicTokens) {
       if (t.classicAsset) {
-        const has = await payflow.checkTrustline(
+        const has = await checkTrustline(
           viewAddress,
           t.classicAsset.code,
           t.classicAsset.issuer,
@@ -747,7 +847,8 @@ function AccountInner() {
     }
   }
 
-  async function run(key: string, fn: () => Promise<string>) {
+  /** Returns whether `fn` succeeded, so a caller can decide what to do next. */
+  async function run(key: string, fn: () => Promise<string>): Promise<boolean> {
     setBusy(key);
     setError(null);
     setDone(null);
@@ -755,8 +856,13 @@ function AccountInner() {
     try {
       setDone(await fn());
       await load();
+      // Every write here spends the native balance on fees, so the header's
+      // figure is stale the moment the transaction lands.
+      await refreshAccount();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -778,6 +884,32 @@ function AccountInner() {
     setFundAmount("");
   }
 
+  /** Open the transfer form for a mandate, defaulting to a blank address. */
+  function openTransfer(mandateId: number) {
+    setTransferFor(mandateId);
+    setTransferTo("");
+    setConfirmCancel(null);
+    setPauseFor(null);
+    setError(null);
+  }
+
+  async function transferConfirmed(mandateId: number) {
+    if (!address || !signXdr || transferDisplayError) return;
+    await run(`transfer-${mandateId}`, () =>
+      payflow.transferMandate(address, signXdr, mandateId, transferTo.trim()),
+    );
+    setTransferFor(null);
+    setTransferTo("");
+  }
+
+  async function acceptTransfer(mandateId: number) {
+    if (!address || !signXdr) return;
+    await run(`accept-${mandateId}`, () =>
+      payflow.acceptMandateTransfer(address, signXdr, mandateId),
+    );
+  }
+
+  /** Read first, then ask: the dialog counts exactly what it will cancel. */
   async function handleCancelAll() {
     if (!address || isReadOnly) return;
 
@@ -790,13 +922,13 @@ function AccountInner() {
       setError(tr("No active or paused mandates to cancel."));
       return;
     }
+    setError(null);
+    setCancelAllTargets(toCancel);
+  }
 
-    if (
-      !window.confirm(tr("This will cancel {0} mandate{1}. Continue?", { "0": toCancel.length, "1": toCancel.length !== 1 ? "s" : "" }),
-      )
-    ) {
-      return;
-    }
+  async function cancelAllConfirmed() {
+    const toCancel = cancelAllTargets;
+    if (!address || isReadOnly || !toCancel) return;
 
     setBusy("cancel-all");
     setError(null);
@@ -829,6 +961,7 @@ function AccountInner() {
       : "No mandates were cancelled";
 
     setDone(result);
+    setCancelAllTargets(null);
     await load();
     setBusy(null);
   }
@@ -865,6 +998,16 @@ function AccountInner() {
   const pauseSupported = (mandates ?? []).some(
     (m) => mandatePauseUntil(m) !== null,
   );
+
+  /**
+   * Whether the contract behind these mandates can service a transfer.
+   *
+   * The probe in the effect above answers for the deployed contract; the
+   * mandates on screen confirm it too, so a stale probe cannot offer a write
+   * the contract would reject.
+   */
+  const transferAvailable =
+    transferSupport === true && (mandates ?? []).some((m) => mandateSupportsTransfer(m));
 
   function openPausePicker(mandateId: number) {
     if (isReadOnly) return;
@@ -915,6 +1058,33 @@ function AccountInner() {
         err instanceof Error ? err.message : "Could not build the calendar file.",
       );
     }
+  }
+
+  function openCapEditor(m: ApiMandate) {
+    setCapFor(m.id);
+    setCapAmount(m.max_charges > 0 ? String(m.max_charges) : "");
+    setCapError(null);
+  }
+
+  function submitCap(m: ApiMandate) {
+    const raw = capAmount.trim();
+    if (!/^\d+$/.test(raw)) {
+      setCapError("Enter a whole number of charges.");
+      return;
+    }
+    const next = BigInt(raw);
+    if (next < BigInt(m.charges_made)) {
+      setCapError(`Cap cannot be below the ${m.charges_made} charge${m.charges_made === 1 ? "" : "s"} already taken.`);
+      return;
+    }
+    setCapError(null);
+    if (!address) return;
+    const source = address;
+    void run(`cap-${m.id}`, async () => {
+      const hash = await payflow.setMaxCharges(source, signXdr, m.id, next);
+      setCapFor(null);
+      return hash;
+    });
   }
 
   /**
@@ -1131,6 +1301,7 @@ function AccountInner() {
         </Notice>
       )}
 
+      <ContractVersionNotice />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {info && (
         <Notice tone="info">
@@ -1153,7 +1324,9 @@ function AccountInner() {
       {!isReadOnly && (
         <Panel
           title={tr("Fund your vault")}
-          subtitle={tr("Charges are debited from this balance. Withdraw at any time — nothing is locked.")}
+          subtitle={tr(
+            "Charges are debited from this balance. Withdraw at any time — nothing is locked, but a withdrawal can stop upcoming charges: the next one fails if it finds the vault short.",
+          )}
         >
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[12rem] flex-1">
@@ -1165,12 +1338,58 @@ function AccountInner() {
                 decimals={vaultMeta.decimals}
                 placeholder="5.0"
                 disabled={busy !== null}
-                hint={tr("Accepts 5, 5.0 — and 5,0 where commas are decimals.")}
+                hint={
+                  nativeBalance !== null && vaultMeta.symbol === "XLM"
+                    ? tr("Wallet balance: {0}", { "0": formatAmount(nativeBalance, vaultMeta) })
+                    : tr("Accepts 5, 5.0 — and 5,0 where commas are decimals.")
+                }
+                hideError={withdrawError !== null}
+                describedBy={withdrawError ? "withdraw-amount-error" : undefined}
               />
+              {withdrawError && (
+                <p id="withdraw-amount-error" role="alert" className="mt-1 text-sm text-danger">
+                  {translateMessage(withdrawError)}
+                </p>
+              )}
             </div>
             <button
               type="button"
-              className="btn-primary"
+              className="btn-ghost"
+              disabled={busy !== null || balance === null || balance === 0n}
+              onClick={() =>
+                setAmount(fromStroops(balance ?? 0n, vaultMeta.decimals, vaultMeta.decimals))
+              }
+              aria-label="Fill the amount with the full vault balance"
+              title={`Withdraw the full balance (${formatAmount(balance ?? 0n, vaultMeta)})`}
+            >
+              Max
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={busy !== null || nativeBalance === null || nativeBalance === 0n}
+              onClick={() => {
+                // XLM pays the fees and the account's own reserve, so the most
+                // that can be deposited is less than the balance on screen.
+                const fill =
+                  vaultMeta.symbol === "XLM"
+                    ? maxDeposit(nativeBalance ?? 0n)
+                    : (nativeBalance ?? 0n);
+                setAmount(fromStroops(fill, vaultMeta.decimals, vaultMeta.decimals));
+              }}
+              aria-label="Fill the amount with the maximum spendable wallet balance"
+              title={
+                vaultMeta.symbol === "XLM"
+                  ? tr("Fill max spendable balance (leaving the account reserve)")
+                  : tr("Fill full wallet balance")
+              }
+            >
+              Max wallet
+            </button>
+            <LoadingButton
+              variant="primary"
+              loading={busy === "deposit"}
+              loadingText={tr("Depositing…")}
               disabled={busy !== null || networkMismatch}
               onClick={() =>
                 void run("deposit", () =>
@@ -1183,12 +1402,13 @@ function AccountInner() {
                 )
               }
             >
-              {busy === "deposit" ?tr("Depositing…") :tr("Deposit")}
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
-              disabled={busy !== null || networkMismatch}
+              {tr("Deposit")}
+            </LoadingButton>
+            <LoadingButton
+              variant="ghost"
+              loading={busy === "withdraw"}
+              loadingText={tr("Withdrawing…")}
+              disabled={busy !== null || networkMismatch || !withdrawCheck.ok}
               onClick={() =>
                 void run("withdraw", () =>
                   payflow.withdraw(
@@ -1200,8 +1420,8 @@ function AccountInner() {
                 )
               }
             >
-              {busy === "withdraw" ?tr("Withdrawing…") :tr("Withdraw")}
-            </button>
+              {tr("Withdraw")}
+            </LoadingButton>
           </div>
         </Panel>
       )}
@@ -1219,18 +1439,19 @@ function AccountInner() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className="btn-primary"
-                  disabled={busy !== null || networkMismatch}
-                  onClick={fundConfirmed}
-                >
-                  {busy === `fund-for-${fundFor}` ?tr("Funding…") :tr("Fund")}
-                </button>
-                <button
-                  type="button"
                   className="btn-ghost"
                   disabled={busy !== null}
                   onClick={() => setFundFor(null)}
                 >{tr("Cancel")}</button>
+                <LoadingButton
+                  variant="primary"
+                  loading={busy === `fund-for-${fundFor}`}
+                  loadingText={tr("Funding…")}
+                  disabled={busy !== null || networkMismatch}
+                  onClick={fundConfirmed}
+                >
+                  {tr("Fund")}
+                </LoadingButton>
               </div>
             </div>
           ) : (
@@ -1443,6 +1664,10 @@ function AccountInner() {
                 const discounted = nextChargeAmount(m);
                 const badge = discountBadge(m);
                 const remaining = remainingDiscountCharges(m);
+                const pending = mandatePendingTransfer(m);
+                // Both of these read from data the page already has, so the
+                // timeline works in contract-only mode: the mandates may come
+                // from chain state and the balance from a vault read.
                 const schedule = buildChargeSchedule(m);
                 const nextAmount = schedule.charges[0]?.amount;
                 const sameToken =
@@ -1486,6 +1711,11 @@ function AccountInner() {
                           )}
                           {m.ended_by === "merchant" && (
                             <span className="text-xs text-muted">{tr("ended by the merchant")}</span>
+                          )}
+                          {pending && (
+                            <span className="rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent">
+                              Transfer pending
+                            </span>
                           )}
                           {m.status === "Paused" && pausedBy.get(m.id) === "merchant" && (
                             <span className="text-xs text-muted">{tr("paused by the merchant")}</span>
@@ -1537,6 +1767,19 @@ function AccountInner() {
                         {mandateSupportsSpendLimit(m) && (
                           <div className="mt-1 text-xs text-accent">
                             {tr(spendLimitInfo())}
+                          </div>
+                        )}
+                        {pending && (
+                          <div className="mt-1 text-xs text-muted">
+                            {pending === address ? (
+                              <>This subscription is being transferred to this wallet. Accept it below to take it over.</>
+                            ) : (
+                              <>
+                                Transfer to{" "}
+                                <span className="font-mono truncate">{shortAddress(pending)}</span>{" "}
+                                is pending. The receiving wallet must accept it.
+                              </>
+                            )}
                           </div>
                         )}
                         {isPastDue && pastDueShortfall !== null && (
@@ -1633,6 +1876,31 @@ function AccountInner() {
                             }
                           >{tr("Resume")}</button>
                         )}
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          disabled={busy !== null || networkMismatch}
+                          onClick={() => openCapEditor(m)}
+                        >
+                          Edit cap
+                        </button>
+
+                        {/* Offered only against a contract that carries the
+                            two-step transfer; see `transferAvailable`. */}
+                        {transferAvailable &&
+                          !pending &&
+                          (transferFor === m.id ? null : (
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              disabled={busy !== null || networkMismatch}
+                              onClick={() => openTransfer(m.id)}
+                            >
+                              Transfer…
+                            </button>
+                          ))}
+                        {/* Offered only against a contract that carries
+                            pause_until; see `pauseSupported`. */}
                         {pauseSupported &&
                           (pauseFor === m.id ? (
                             <>
@@ -1675,41 +1943,179 @@ function AccountInner() {
                               onClick={() => openPausePicker(m.id)}
                             >{tr("Pause until…")}</button>
                           ))}
-                        {confirmCancel === m.id ? (
-                          <>
-                            <button
-                              type="button"
-                              className="btn-ghost"
-                              disabled={busy !== null}
-                              autoFocus
-                              onClick={() => setConfirmCancel(null)}
-                            >{tr("Keep")}</button>
-                            <button
-                              type="button"
-                              className="btn-danger"
-                              disabled={busy !== null || networkMismatch}
-                              aria-label={tr("Confirm cancelling subscription #{0}", { "0": m.id })}
-                              onClick={() =>
-                                void run(`cancel-${m.id}`, () =>
-                                  payflow.cancel(address!, signXdr, m.id),
-                                ).then(() => setConfirmCancel(null))
-                              }
-                            >
-                              {busy === `cancel-${m.id}` ?tr("Cancelling…") :tr("Confirm")}
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn-ghost text-danger"
-                            disabled={busy !== null || networkMismatch}
-                            aria-label={tr("Cancel subscription #{0}", { "0": m.id })}
-                            onClick={() => setConfirmCancel(m.id)}
-                          >{tr("Cancel")}</button>
+                        <button
+                          type="button"
+                          className="btn-ghost text-danger"
+                          disabled={busy !== null || networkMismatch}
+                          aria-label={tr("Cancel subscription #{0}", { "0": m.id })}
+                          onClick={() => {
+                            setError(null);
+                            setConfirmCancel(m.id);
+                          }}
+                        >{tr("Cancel")}</button>
+                        {confirmCancel === m.id && (
+                          <ConfirmDialog
+                            open
+                            onCancel={() => setConfirmCancel(null)}
+                            onConfirm={() =>
+                              void run(`cancel-${m.id}`, () =>
+                                payflow.cancel(address!, signXdr, m.id),
+                              ).then((ok) => {
+                                if (ok) setConfirmCancel(null);
+                              })
+                            }
+                            title={confirmTitle(tr("Cancel subscription #{0}", { "0": m.id }))}
+                            confirmLabel={tr("Confirm cancellation")}
+                            cancelLabel={tr("Keep")}
+                            busy={busy === `cancel-${m.id}`}
+                            busyLabel={tr("Cancelling…")}
+                            confirmDisabled={networkMismatch}
+                            danger
+                            error={error ?? undefined}
+                          >
+                            <p className="text-muted">
+                              {tr("This subscription stops billing immediately. This cannot be undone.")}
+                            </p>
+                          </ConfirmDialog>
                         )}
                       </div>
                     )}
+
+                    {transferAvailable && pending === address && (
+                      <section
+                        className="mt-4 border-t border-edge pt-3"
+                        aria-labelledby={`accept-transfer-${m.id}`}
+                      >
+                        <h3 id={`accept-transfer-${m.id}`} className="text-sm font-medium">
+                          Accept transfer
+                        </h3>
+                        <p className="mt-1 text-xs text-muted">
+                          Another wallet is transferring this subscription to you.
+                          Accepting makes it yours: future charges debit your vault,
+                          so make sure it is funded.
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            disabled={busy !== null || networkMismatch}
+                            onClick={() => void acceptTransfer(m.id)}
+                          >
+                            {busy === `accept-${m.id}` ? "Accepting…" : "Accept transfer"}
+                          </button>
+                        </div>
+                      </section>
+                    )}
+
+                    {transferAvailable && transferFor === m.id && (
+                      <section
+                        className="mt-4 border-t border-edge pt-3"
+                        aria-labelledby={`transfer-${m.id}`}
+                      >
+                        <h3 id={`transfer-${m.id}`} className="text-sm font-medium">
+                          Transfer to a new wallet
+                        </h3>
+                        <p className="mt-1 text-xs text-muted">
+                          The new wallet must accept the transfer before it takes
+                          effect. Its vault must be funded — charges will debit it
+                          once the transfer completes.
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-end gap-3">
+                          <div className="min-w-[14rem] flex-1">
+                            <label className="label" htmlFor={`transfer-to-${m.id}`}>
+                              New wallet address
+                            </label>
+                            <input
+                              id={`transfer-to-${m.id}`}
+                              className="input"
+                              placeholder="GABC…"
+                              value={transferTo}
+                              onChange={(e) => setTransferTo(e.target.value)}
+                              aria-invalid={Boolean(transferDisplayError)}
+                              aria-describedby={
+                                transferDisplayError ? `transfer-to-error-${m.id}` : undefined
+                              }
+                              disabled={busy !== null}
+                            />
+                            {transferDisplayError && (
+                              <p
+                                id={`transfer-to-error-${m.id}`}
+                                className="mt-1 text-sm text-danger"
+                              >
+                                {transferDisplayError}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            disabled={
+                              busy !== null ||
+                              networkMismatch ||
+                              Boolean(transferDisplayError) ||
+                              !transferTo.trim()
+                            }
+                            onClick={() => void transferConfirmed(m.id)}
+                          >
+                            {busy === `transfer-${m.id}` ? "Transferring…" : "Transfer"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            disabled={busy !== null}
+                            onClick={() => {
+                              setTransferFor(null);
+                              setTransferTo("");
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </section>
+                    )}
                   </div>
+                  {capFor === m.id && (
+                    <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-edge pt-3">
+                      <div className="min-w-[10rem] flex-1">
+                        <label
+                          htmlFor={`cap-${m.id}`}
+                          className="block text-xs text-muted"
+                        >
+                          Max charges (0 = unlimited)
+                        </label>
+                        <input
+                          id={`cap-${m.id}`}
+                          type="text"
+                          inputMode="numeric"
+                          className="input mt-1 w-full"
+                          value={capAmount}
+                          onChange={(e) => setCapAmount(e.target.value)}
+                          disabled={busy !== null}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={busy !== null || networkMismatch}
+                        onClick={() => submitCap(m)}
+                      >
+                        {busy === `cap-${m.id}` ? "Saving…" : "Save cap"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled={busy !== null}
+                        onClick={() => setCapFor(null)}
+                      >
+                        Close
+                      </button>
+                      {capError && (
+                        <p className="w-full text-xs text-rose-300" role="alert">
+                          {capError}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                     {schedule.charges.length > 0 && (
                       <section

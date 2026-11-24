@@ -8,7 +8,10 @@ import { useSearchParams } from "next/navigation";
 import { api, type ApiCharge, type ApiMandate, type ApiPlan } from "@/lib/api";
 import { chainMandate } from "@/lib/chain";
 import { config } from "@/lib/config";
-import { mandateStatus, payflow, type Plan } from "@/lib/payflow";
+import { mandateStatus, type Plan } from "@/lib/payflow-core";
+// The SDK-backed contract module loads on demand, so the Stellar SDK
+// stays out of this route's first-load bundle.
+import { payflow } from "@/lib/lazy-payflow";
 import { useWallet } from "@/lib/wallet";
 import{ fromStroops } from "@/lib/format";
 import { metaFor, useTokenMetas } from "@/lib/token";
@@ -23,6 +26,7 @@ import {
   Stat,
   TxLink,
 } from "@/components/ui";
+import { ConfirmDialog, confirmTitle } from "@/components/ConfirmDialog";
 
 function MandateDetailsInner() {
   const { t: tr, formatPeriod, formatDate, formatAmount, translateMessage, formatTokenValue, formatNumber } = useI18n();
@@ -132,7 +136,8 @@ function MandateDetailsInner() {
     void load();
   }, [load]);
 
-  async function runAction(key: string, fn: () => Promise<string>) {
+  /** Returns whether `fn` succeeded, so a caller can decide what to do next. */
+  async function runAction(key: string, fn: () => Promise<string>): Promise<boolean> {
     setBusy(key);
     setError(null);
     setDone(null);
@@ -140,12 +145,12 @@ function MandateDetailsInner() {
       const tx = await fn();
       setDone(tx);
       await load();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy(null);
-      setConfirmCancel(false);
-      setConfirmEnd(false);
     }
   }
 
@@ -346,33 +351,38 @@ function MandateDetailsInner() {
                   </button>
                 )}
 
-                {!confirmCancel ? (
-                  <button
-                    type="button"
-                    className="btn-danger"
-                    disabled={busy !== null || networkMismatch}
-                    onClick={() => setConfirmCancel(true)}
-                  >{tr("Cancel subscription")}</button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-danger">{tr("Confirm cancellation?")}</span>
-                    <button
-                      type="button"
-                      className="btn-danger text-xs py-1"
-                      disabled={busy !== null || networkMismatch}
-                      onClick={() =>
-                        void runAction("cancel", () => payflow.cancel(address, signXdr, mandate.id))
-                      }
-                    >
-                      {busy === "cancel" ?tr("Cancelling…") :tr("Yes, cancel")}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-ghost text-xs py-1"
-                      onClick={() => setConfirmCancel(false)}
-                    >{tr("No")}</button>
-                  </div>
-                )}
+                <button
+                  type="button"
+                  className="btn-danger"
+                  disabled={busy !== null || networkMismatch}
+                  onClick={() => {
+                    setError(null);
+                    setConfirmCancel(true);
+                  }}
+                >{tr("Cancel subscription")}</button>
+                <ConfirmDialog
+                  open={confirmCancel}
+                  onCancel={() => setConfirmCancel(false)}
+                  onConfirm={() =>
+                    void runAction("cancel", () => payflow.cancel(address, signXdr, mandate.id)).then(
+                      (ok) => {
+                        if (ok) setConfirmCancel(false);
+                      },
+                    )
+                  }
+                  title={confirmTitle(tr("Cancel subscription"))}
+                  confirmLabel={tr("Confirm cancellation")}
+                  cancelLabel={tr("No")}
+                  busy={busy === "cancel"}
+                  busyLabel={tr("Cancelling…")}
+                  confirmDisabled={networkMismatch}
+                  danger
+                  error={error ?? undefined}
+                >
+                  <p className="text-muted">
+                    {tr("This subscription stops billing immediately. This cannot be undone.")}
+                  </p>
+                </ConfirmDialog>
               </>
             )}
 
@@ -419,6 +429,12 @@ function MandateDetailsInner() {
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-danger">{tr("End this mandate permanently?")}</span>
+                    {/* Secondary first, committing action last. */}
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs py-1"
+                      onClick={() => setConfirmEnd(false)}
+                    >{tr("No")}</button>
                     <button
                       type="button"
                       className="btn-danger text-xs py-1"
@@ -426,16 +442,11 @@ function MandateDetailsInner() {
                       onClick={() =>
                         void runAction("end", () =>
                           payflow.endMandate(address, signXdr, mandate.id),
-                        )
+                        ).then(() => setConfirmEnd(false))
                       }
                     >
                       {busy === "end" ?tr("Ending…") :tr("Yes, end")}
                     </button>
-                    <button
-                      type="button"
-                      className="btn-ghost text-xs py-1"
-                      onClick={() => setConfirmEnd(false)}
-                    >{tr("No")}</button>
                   </div>
                 )}
               </>

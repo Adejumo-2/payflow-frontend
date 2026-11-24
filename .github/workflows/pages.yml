@@ -19,8 +19,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -29,6 +29,7 @@ jobs:
         env:
           # Project pages are served from /<repo>/.
           NEXT_PUBLIC_BASE_PATH: /payflow-frontend
+          NEXT_PUBLIC_SITE_URL: https://mmm-pay.github.io
           NEXT_PUBLIC_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
           NEXT_PUBLIC_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
           NEXT_PUBLIC_STELLAR_NETWORK: TESTNET
@@ -43,7 +44,9 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
       # Stop Pages running the output through Jekyll, which drops _next/.
       - run: touch out/.nojekyll
-      - uses: actions/upload-pages-artifact@v3
+      # GitHub Pages serves 404.html for unknown paths; use the app's not-found page.
+      - run: cp out/404/index.html out/404.html 2>/dev/null || true
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: out
 
@@ -55,4 +58,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

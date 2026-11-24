@@ -13,7 +13,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-green"/>
 </p>
 
-> **Live demo:** https://mmm-pay.github.io/payflow-frontend/ ·
+> **Livedemo:** https://mmm-pay.github.io/payflow-frontend/ ·
 > **Docs:** https://mmm-pay.github.io/payflow-docs/
 
 ---
@@ -26,7 +26,7 @@ Four pages:
 | Route | Who it is for | What it does |
 |---|---|---|
 | `/` | everyone | Explains the mandate model, shows protocol counters and live contract IDs |
-| `/subscribe` | subscribers | Browse published plans and open a mandate |
+| `/subscribe` | subscribers | Browse published plans and open a mandate. A shared link (`?plan=12`) opens one plan |
 | `/account` | subscribers | Fund and withdraw from the vault, pause or cancel subscriptions |
 | `/merchant` | merchants | Publish plans, track revenue, settle due mandates manually, discount or end a subscriber's mandate |
 
@@ -49,6 +49,22 @@ of those calls is allowed to fail: `src/lib/api.ts` returns `null` instead of
 throwing, and the pages fall back to reading contract state directly. **The app
 still works with the backend switched off** — you lose the lists, not the
 ability to pay.
+
+### Wallet activity timeline
+
+When `NEXT_PUBLIC_API_URL` is explicitly configured, the connected-wallet
+activity panel requests each mandate's history from `GET /api/mandates/:id/timeline`.
+
+The proposed frontend contract is `{ "events": [...] }`. Each event must have
+an immutable, non-empty `event_id`, `mandate_id`, one of `subscribed`,
+`charged`, `pause_changed`, `cancelled`, `mandate_ended`, or
+`mandate_completed`, and a positive safe-integer `ledger` sequence. Optional
+`event_index` makes same-ledger ordering deterministic. Amounts and fees are
+decimal strings in the token's smallest unit; `token`, `token_symbol`, and
+`token_decimals` must be supplied to format an amount. If token metadata is
+missing, the UI keeps the raw amount and does not label it as XLM. The
+endpoint is a proposed frontend/backend contract and must be implemented by
+the backend before the feed can return activity.
 
 ## Quick start
 
@@ -104,7 +120,25 @@ reason a deployed frontend keeps calling `localhost`.
 | `NEXT_PUBLIC_TOKEN_ID` | SEP-41 token used for plans (native XLM SAC by default) |
 | `NEXT_PUBLIC_API_URL` | payflow-backend base URL. Empty means read contract state directly |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Optional public Reown project ID; empty disables WalletConnect |
+
+| `NEXT_PUBLIC_API_URL` | payflow-backend base URL. Empty means read contract state directly; the wallet activity control is hidden |
 | `NEXT_PUBLIC_READ_SOURCE` | Any existing account, used as the source for read-only simulations before a wallet connects |
+| `NEXT_PUBLIC_SITE_URL` | Origin the canonical link and the social preview URLs are built from |
+| `NEXT_PUBLIC_BASE_PATH` | Path the static export is served from. GitHub Pages serves a project site from `/<repo>`; Vercel and local dev serve from the root and set nothing |
+
+## Titles, descriptions and link previews
+
+Every route has its own title, description and share image. The page list
+lives in `src/lib/pages.json`; `src/lib/metadata.ts` turns it into the
+metadata, and `scripts/generate-og.mjs` draws the 1200×630 preview image of
+each page into `public/og/`. The images are drawn before every build
+(`npm run og`), because Next's own image route writes a file without an
+extension, which GitHub Pages then serves as `application/octet-stream` — a
+type the link-preview crawlers refuse.
+
+Set `NEXT_PUBLIC_SITE_URL` and `NEXT_PUBLIC_BASE_PATH` to the host and the
+path the site is served from, so the canonical link and the image URL are
+absolute and still carry the base path.
 
 ## Deploying to Vercel
 
@@ -118,7 +152,7 @@ reason a deployed frontend keeps calling `localhost`.
 
 ```
 src/
-  app/            routes: /, /subscribe, /account, /merchant
+  app/            routes: /, /subscribe, /account, /merchant, /m, /plans/[id]
   components/     presentational pieces (ui.tsx, WalletButton.tsx)
   lib/
     payflow.ts    contract SDK — read via simulation, write via wallet

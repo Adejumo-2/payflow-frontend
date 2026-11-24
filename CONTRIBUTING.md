@@ -16,11 +16,25 @@ https://friendbot.stellar.org.
 
 | Job | Command |
 |---|---|
+| `lint` | `npm run lint` |
 | `typecheck` | `npm run typecheck` |
-| `build` | `npm run build` |
+| `test` | `npm test` |
+| `build` | `npm run build` + `npm run budget` |
+| `visual` | `npm run build:visual && npm run test:visual` — see [docs/visual-regression.md](docs/visual-regression.md) |
 
-Both must pass. The build job supplies the public env vars; if you add a new
+All must pass. The build job supplies the public env vars; if you add a new
 required variable, add it to the workflow too or the build breaks.
+
+The budget step fails when any exported route's first-load JS exceeds its
+cap in `js-budget.json`. Keep the Stellar SDK and the wallet kit out of
+static import graphs — load them with `import()` where they are first used.
+If a route's budget must grow, raise it in `js-budget.json` in the same PR
+and say why.
+
+## Accessibility
+
+New components must pass the checklist in [docs/accessibility.md](docs/accessibility.md)
+before review.
 
 ## Code standards
 
@@ -41,8 +55,10 @@ required variable, add it to the workflow too or the build breaks.
 
 ## Adding a contract call
 
-1. Add the typed wrapper to `payflow` in `src/lib/payflow.ts`, encoding
-   arguments with the `arg` helpers so ScVal types stay explicit.
+1. Add the method to the matching contract table in `src/lib/bindings.ts`,
+   encoding arguments with the `arg` helpers so ScVal types stay explicit.
+   The typed client built there is exposed as `payflow`; only per-session
+   behaviour such as the `get_plan` cache belongs in `src/lib/payflow.ts`.
 2. Add any new error codes to `ERRORS`.
 3. Wire it into a page with the `run()` pattern already used in
    `/account` and `/merchant`: set busy, clear notices, refresh on success.

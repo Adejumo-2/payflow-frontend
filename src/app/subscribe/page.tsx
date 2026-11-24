@@ -9,9 +9,12 @@ import { useSearchParams } from "next/navigation";
 import { api, type ApiPlan } from "@/lib/api";
 import { chainPlans } from "@/lib/chain";
 import { config } from "@/lib/config";
-import { payflow } from "@/lib/payflow";
+// The SDK-backed contract module loads on demand, so the Stellar SDK
+// stays out of this route's first-load bundle.
+import { payflow } from "@/lib/lazy-payflow";
+import { planParam } from "@/lib/share";
 import { useWallet } from "@/lib/wallet";
-import{ fromStroops, type TokenMeta } from "@/lib/format";
+import type { TokenMeta } from "@/lib/format";
 import { trialSeconds } from "@/lib/trial";
 import { availabilityInteger, planAvailability } from "@/lib/availability";
 import {
@@ -23,6 +26,8 @@ import {
 import { metaFor, useTokenMetas } from "@/lib/token";
 import { filterAndSortPlans, type PlanPeriodOption, type PlanSortOption } from "@/lib/plans";
 import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/price";
+import { checkChargeLimit, confirmationFor } from "@/lib/subscribe-confirmation";
+import { observeContractRecord } from "@/lib/contract-compat";
 import { Empty, MerchantAccount, Notice, Panel, SkeletonPlanCards, TxLink } from "@/components/ui";
 import { Search } from "@/components/Search";
 
@@ -145,9 +150,11 @@ function ComparisonTable({
 }
 
 function SubscribeInner() {
-  const { t: tr, formatPeriod, formatDate, formatWhen, translateMessage, formatTrialLength, trialBadge, formatTokenValue, formatUsdString, formatNumber } = useI18n();
+  const { t: tr, formatPeriod, formatDate, formatWhen, translateMessage, formatTrialLength, trialBadge, formatTokenValue, formatUsdString, formatNumber, formatAmount, formatFeeBps } = useI18n();
   const searchParams = useSearchParams();
   const sortParam = (searchParams?.get("sort") as PlanSortOption) || "newest";
+  // A shared link (?plan=12) shows that one plan instead of the catalogue.
+  const shared = planParam(searchParams?.get("plan"));
   const periodParam = (searchParams?.get("period") as PlanPeriodOption) || "all";
   const queryParam = searchParams?.get("q") ?? "";
   const tokenParam = searchParams?.get("token") ?? "all";
@@ -164,11 +171,37 @@ function SubscribeInner() {
   const { address, networkMismatch, signXdr } = useWallet();
   const [plans, setPlans] = useState<ApiPlan[] | null>(null);
   const [maxCharges, setMaxCharges] = useState<Record<number, string>>({});
-  const [busy, setBusy] = useState<number | null>(null);
+  const [depositBusy, setDepositBusy] = useState<number | null>(null);
+  const [vaultBalances, setVaultBalances] = useState<Record<string, bigint>>({});
   const [direct, setDirect] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { run, getState, reset } = useAction();
+  // Which plan is being signed for, and the hash once it lands: useAction
+  // tracks that an action is running, not which plan or what it returned.
+  const [busy, setBusy] = useState<number | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  // The key of the last subscribe attempt, kept after it finishes so its
+  // failure is still readable once no plan is busy any more.
+  const [lastKey, setLastKey] = useState<string | null>(null);
+  const error = localError ?? (lastKey ? getState(lastKey).error : null);
+  const setError = setLocalError;
+  // The plan just subscribed to, so the confirmation can say when the trial it
+  // advertised actually ends. The mandate id is not returned by `subscribe`, so
+  // this is the only place the trial length is known at signing time.
   const [doneTrial, setDoneTrial] = useState<{ plan: string; seconds: number } | null>(null);
+  // The subscription the subscriber has asked to confirm. Nothing is signed
+  // until they press the dialog's confirm button; `at` is the wall clock the
+  // summary was built from, so a trial end does not drift while the dialog is
+  // up, and `address` is the account the permission was written for.
+  const [pending, setPending] = useState<{
+    plan: ApiPlan;
+    limit: number;
+    at: number;
+    address: string;
+  } | null>(null);
+  const [feeBps, setFeeBps] = useState<number | null>(null);
+  const [feeLoading, setFeeLoading] = useState(false);
+  const feeReading = useRef(false);
   const { priceData: xlmPrice } = useXlmUsdPrice();
 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -249,6 +282,9 @@ function SubscribeInner() {
       failed = true;
     }
     if (generation === request.current) {
+      // Indexer rows carry future columns too; observe them so a newer
+      // contract/backend is reported even when the contract fallback is idle.
+      loaded.forEach((plan) => observeContractRecord("plan", plan));
       setPlans(loaded);
       setDirect(!res);
       setLoadFailed(failed);
@@ -258,18 +294,139 @@ function SubscribeInner() {
 
   useEffect(() => {
     void load();
-    const pending = request;
+    const started = request;
     return () => {
-      pending.current++;
+      started.current++;
     };
   }, [load]);
+
+  useEffect(() => {
+    if (!address || !plans) return;
+    let active = true;
+    const tokens = Array.from(new Set(plans.map((p) => p.token)));
+    void (async () => {
+      const map: Record<string, bigint> = {};
+      for (const t of tokens) {
+        try {
+          const bal = await payflow.vaultBalance(address ?? config.readSource, address, t);
+          if (active) map[t] = bal;
+        } catch {
+          // ignore
+        }
+      }
+      if (active) setVaultBalances(map);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [address, plans]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  async function subscribe(plan: ApiPlan) {
+  /**
+   * Read the protocol fee once, lazily, when a confirmation is about to show it.
+   *
+   * A contract read, so it works the same with and without
+   * `NEXT_PUBLIC_API_URL`. A failure is not fatal: the dialog says the fee could
+   * not be read instead of showing 0% and implying the protocol charges nothing,
+   * and the contract still takes its cut when the charge settles.
+   */
+  function loadFee() {
+    if (feeReading.current || feeBps !== null) return;
+    feeReading.current = true;
+    setFeeLoading(true);
+    void payflow
+      .feeBps(address ?? config.readSource)
+      .then((rate) => setFeeBps(rate))
+      .catch(() => undefined)
+      .finally(() => {
+        feeReading.current = false;
+        setFeeLoading(false);
+      });
+  }
+
+  /**
+   * Validate the cap and open the confirmation. Everything here is local: no
+   * RPC, no wallet, so the dialog appears immediately. The availability check
+   * uses the wall clock rather than the once-a-second render tick, because a
+   * plan can close between the last render and this click — and confirming a
+   * subscription the contract will refuse only costs the subscriber a fee.
+   */
+  function openConfirmation(plan: ApiPlan) {
+    if (!address) {
+      setError(tr("Connect a wallet first."));
+      return;
+    }
+    if (networkMismatch) {
+      setError(tr("Switch your wallet to the correct network first."));
+      return;
+    }
+    const blocked = planAvailability(plan).reason;
+    if (blocked) {
+      setError(blocked);
+      return;
+    }
+    const cap = checkChargeLimit(maxCharges[plan.id]);
+    if (!cap.ok) {
+      setError(cap.message);
+      return;
+    }
+    setError(null);
+    setPending({ plan, limit: cap.limit, at: Math.floor(Date.now() / 1000), address });
+    loadFee();
+  }
+
+  function confirmSubscription() {
+    if (!pending || !confirmation) return;
+    const { plan, limit } = pending;
+    // Close before signing: the wallet popup belongs on top of the page, not of
+    // a modal, and closing hands focus back to the Subscribe button that opened
+    // it. Progress and any error are then reported by the page itself.
+    setPending(null);
+    void subscribe(plan, limit);
+  }
+
+  async function depositFor(plan: ApiPlan, amount: bigint) {
+    if (!address) {
+      setError(tr("Connect a wallet first."));
+      return;
+    }
+    if (networkMismatch) {
+      setError(tr("Switch your wallet to the correct network first."));
+      return;
+    }
+    if (amount <= 0n) {
+      setError(tr("Enter a deposit amount first."));
+      return;
+    }
+    setDepositBusy(plan.id);
+    setError(null);
+    try {
+      const hash = await payflow.deposit(
+        address,
+        async (xdr) => {
+          if (walletState.current.address !== address || walletState.current.networkMismatch) {
+            throw new Error(tr("Wallet changed. Check your wallet and try again."));
+          }
+          return signXdr(xdr);
+        },
+        plan.token,
+        amount,
+      );
+      setDone(hash);
+      const bal = await payflow.vaultBalance(address ?? config.readSource, address, plan.token);
+      setVaultBalances((m) => ({ ...m, [plan.token]: bal }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDepositBusy(null);
+    }
+  }
+
+  async function subscribe(plan: ApiPlan, limit: number) {
     if (!address) {
       setError(tr("Connect a wallet first."));
       return;
@@ -284,14 +441,11 @@ function SubscribeInner() {
       return;
     }
     setBusy(plan.id);
-    setError(null);
     setDone(null);
-    try {
-      const raw = maxCharges[plan.id]?.trim();
-      const limit = raw ? Number(raw) : 0;
-      if (!Number.isInteger(limit) || limit < 0) {
-        throw new Error(tr("Charge limit must be a whole number, or 0 for open-ended."));
-      }
+    setLocalError(null);
+    reset(`subscribe-${plan.id}`);
+    setLastKey(`subscribe-${plan.id}`);
+    const hash = await run(`subscribe-${plan.id}`, async () => {
       const latest = (await load()).find((p) => p.id === plan.id);
       if (walletState.current.address !== address || walletState.current.networkMismatch) {
         throw new Error(tr("Wallet changed. Check your wallet and try again."));
@@ -312,21 +466,26 @@ function SubscribeInner() {
         plan.id,
         limit,
       );
-      setDone(hash);
       setDoneTrial(
         trialSeconds(plan) > 0
           ? { plan: plan.name || `Plan #${plan.id}`, seconds: trialSeconds(plan) }
           : null,
       );
       await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(null);
-    }
+      return hash;
+    });
+    setBusy(null);
+    if (hash) setDone(hash);
   }
 
   const active = useMemo(() => (plans ?? []).filter((p) => p.active === 1), [plans]);
+  // A link to a plan that has been deactivated or removed is not an empty
+  // page: `sharedPlan` stays null and the page says the plan is gone.
+  const sharedPlan = useMemo(
+    () => (shared.kind === "plan" ? active.find((p) => p.id === shared.id) ?? null : null),
+    [active, shared],
+  );
+  const sharedMissing = shared.kind === "plan" && plans !== null && sharedPlan === null;
   const filteredPlans = useMemo(() => {
     return filterAndSortPlans(active, {
       sort,
@@ -367,17 +526,61 @@ function SubscribeInner() {
     if (comparedPlans.length < 2) setShowComparison(false);
   }, [comparedPlans.length]);
 
+  /**
+   * A confirmation authorises charges for one account, so it only exists while
+   * that account is the connected one, on the right network. Derived rather
+   * than cleared in an effect: if the wallet disconnects or switches accounts
+   * mid-load, the dialog closes itself instead of asking for a commitment the
+   * new account never saw.
+   */
+  const confirmation =
+    pending && address && !networkMismatch && pending.address === address
+      ? confirmationFor({
+          plan: pending.plan,
+          limit: pending.limit,
+          feeBps,
+          now: pending.at,
+        })
+      : null;
+  const pendingPlan = confirmation && pending ? pending.plan : null;
+  const pendingName = pendingPlan
+    ? pendingPlan.name || tr("Plan #{0}", { "0": pendingPlan.id })
+    : "";
+  const pendingMeta = pendingPlan ? metaFor(metas, pendingPlan.token) : null;
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{tr("Available plans")}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {sharedPlan ? sharedPlan.name || tr("Available plans") : tr("Available plans")}
+        </h1>
         <p className="mt-1 text-sm text-muted">{tr("Subscribing opens a mandate. Fund your vault on the")}{" "}
           <Link href="/account" className="text-accent hover:underline">{tr("account page")}</Link>{" "}{tr("or charges will fail for lack of balance.")}</p>
+        {shared.kind === "plan" && (
+          <p className="mt-2 text-sm">
+            <Link href="/subscribe/" className="text-accent hover:underline">
+              {tr("See all plans")}
+            </Link>
+          </p>
+        )}
       </div>
 
+      <SubscriberGuide />
+
+      {sharedMissing && (
+        <Notice tone="info">
+          {tr("That plan is no longer listed. The merchant may have deactivated it.")}
+        </Notice>
+      )}
+      {shared.kind === "invalid" && (
+        <Notice tone="info">
+          {tr("That link does not name a plan, so every plan is listed below.")}
+        </Notice>
+      )}
       {direct && (
         <Notice tone="info">{tr("Reading plans directly from the contract — the indexer is not reachable, so this list is capped at the first 24 plans.")}</Notice>
       )}
+      <ContractVersionNotice />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {done && (
         <Notice tone="ok">{tr("Subscribed. Transaction")}{" "}<TxLink hash={done} />
@@ -632,26 +835,61 @@ function SubscribeInner() {
                         />
                       </div>
 
-                      <button
-                        type="button"
-                        className="btn-primary w-full"
-                        disabled={
-                          busy !== null || !address || networkMismatch || availability.reason !== null
-                        }
-                        aria-describedby={availability.reason ? `availability-${plan.id}` : undefined}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void subscribe(plan);
-                        }}
-                      >
-                        {busy === plan.id
-                          ?tr("Confirming…")
-                          : networkMismatch
-                          ?tr("Wrong network")
-                          : address
-                          ?tr("Subscribe")
-                          :tr("Connect wallet")}
-                      </button>
+                      {(() => {
+                        const currentBal = vaultBalances[plan.token] ?? 0n;
+                        const cap = checkChargeLimit(maxCharges[plan.id]);
+                        const periods = cap.ok && cap.limit > 0 ? cap.limit : 3;
+                        const required = BigInt(plan.amount) * BigInt(periods);
+                        const funded = currentBal >= required;
+                        return (
+                          <div className="space-y-2">
+                            <div className="rounded-lg border border-edge bg-surface/40 p-2 text-xs space-y-1">
+                              <div className="flex items-center justify-between font-medium">
+                                <span className="text-muted">{tr("Guided Flow")}</span>
+                                <span className={funded ? "text-emerald-500 font-semibold" : "text-amber-500 font-semibold"}>
+                                  {funded ? tr("Step 2: Ready to Subscribe") : tr("Step 1: Fund Vault First")}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-muted">
+                                <span>{tr("Vault balance")}</span>
+                                <span className="tabular-nums font-medium text-fg">{formatTokenValue(currentBal, 4, meta.decimals)} {meta.symbol}</span>
+                              </div>
+                            </div>
+
+                            {!funded && (
+                              <DepositCoverageInput
+                                planAmount={plan.amount}
+                                decimals={meta.decimals}
+                                symbol={meta.symbol}
+                                busy={depositBusy === plan.id}
+                                disabled={depositBusy !== null || !address || networkMismatch}
+                                onDeposit={(amount) => depositFor(plan, amount)}
+                              />
+                            )}
+
+                            <LoadingButton
+                              variant="primary"
+                              className="w-full"
+                              loading={busy === plan.id}
+                              loadingText={tr("Confirming…")}
+                              disabled={
+                                busy !== null || !address || networkMismatch || availability.reason !== null
+                              }
+                              aria-describedby={availability.reason ? `availability-${plan.id}` : undefined}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openConfirmation(plan);
+                              }}
+                            >
+                              {networkMismatch
+                                ?tr("Wrong network")
+                                : address
+                                ?tr("Subscribe")
+                                :tr("Connect wallet")}
+                            </LoadingButton>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </Panel>
                 );
@@ -660,6 +898,80 @@ function SubscribeInner() {
           )}
         </div>
       )}
+
+      {/*
+        What the subscriber is agreeing to, before any signature is requested.
+
+        A better approach than a dialog was considered and rejected: expanding
+        the card in place would sit in a two-column grid at 375px, and the
+        wallet popup would still appear over a card the reader may have scrolled
+        away from. `Dialog` already traps focus, closes on Escape and returns
+        focus to this card's Subscribe button, so this is a stated commitment
+        rather than another inline paragraph.
+      */}
+      <ConfirmDialog
+        open={confirmation !== null}
+        onCancel={() => setPending(null)}
+        onConfirm={confirmSubscription}
+        title={confirmation ? tr("Subscribe to {0}?", { "0": pendingName }) : ""}
+        confirmLabel={tr("Confirm and sign")}
+      >
+        {confirmation && pendingPlan && pendingMeta && (
+          <>
+            <p className="text-muted">
+              {tr("A mandate is a standing permission, not a one-off payment. The merchant can charge the amount below from your vault each billing period until you cancel it or it reaches the charge limit.")}
+            </p>
+            <dl className="mt-4 space-y-2">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <dt className="text-muted">{tr("Amount")}</dt>
+                <dd className="font-medium tabular-nums">
+                  {formatAmount(confirmation.gross, pendingMeta)}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <dt className="text-muted">{tr("Billing period")}</dt>
+                <dd>{formatPeriod(confirmation.periodSeconds)}</dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <dt className="text-muted">{tr("Protocol fee")}</dt>
+                <dd className="tabular-nums">
+                  {confirmation.fee === null || confirmation.feeBps === null
+                    ? feeLoading
+                      ? tr("Checking…")
+                      : tr("Unavailable")
+                    : `${formatAmount(confirmation.fee, pendingMeta)} (${formatFeeBps(confirmation.feeBps)})`}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <dt className="text-muted">{tr("Charge limit")}</dt>
+                <dd>
+                  {confirmation.openEnded
+                    ? tr("No limit — charges continue until you cancel.")
+                    : confirmation.limit === 1
+                      ? tr("1 charge, then the mandate completes.")
+                      : tr("{0} charges, then the mandate completes.", { "0": confirmation.limit })}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <dt className="text-muted">{tr("First charge")}</dt>
+                <dd>
+                  {confirmation.firstChargeDueNow
+                    ? tr("Due now")
+                    : `${formatDate(confirmation.firstChargeAt)} (${formatWhen(confirmation.firstChargeAt)})`}
+                </dd>
+              </div>
+            </dl>
+            {confirmation.fee === null && !feeLoading && (
+              <p className="mt-3 text-xs text-muted">
+                {tr("The protocol fee could not be read from the contract right now. It is still taken from the amount above when the charge settles.")}
+              </p>
+            )}
+            <p className="mt-4 text-muted">
+              {tr("Cancel any time from your account page — no fee, and cancelling stops the next charge.")}
+            </p>
+          </>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

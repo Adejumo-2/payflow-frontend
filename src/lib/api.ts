@@ -1,5 +1,6 @@
 import { config } from "./config";
 import { parseWebhookDeliveries } from "./webhook-deliveries";
+import { merchantAuthToken } from "./sep10";
 
 export interface ApiPlan {
   id: number;
@@ -104,6 +105,33 @@ export interface ApiCharge {
   ledger: number;
 }
 
+export type ApiActivityType =
+  | "subscribed"
+  | "charged"
+  | "pause_changed"
+  | "cancelled"
+  | "mandate_ended"
+  | "mandate_completed";
+
+export interface ApiTimelineEvent {
+  event_id: string;
+  mandate_id: number;
+  type: ApiActivityType;
+  ledger: number;
+  event_index?: number;
+  timestamp?: number | null;
+  tx_hash?: string | null;
+  amount?: string | null;
+  fee?: string | null;
+  token?: string | null;
+  token_symbol?: string | null;
+  token_decimals?: number | null;
+}
+
+export interface ApiTimelinePage {
+  events: ApiTimelineEvent[];
+}
+
 /**
  * A charge attempt that failed, proposed by payflow-backend#144.
  *
@@ -127,7 +155,6 @@ export interface ApiChargeAttempt {
   /** Transaction hash if the charge succeeded, null otherwise. */
   tx_hash: string | null;
 }
-
 export interface ApiWebhook {
   id: string;
   url: string;
@@ -187,6 +214,45 @@ export interface ApiVaultEvent {
  * `total_collected` is in smallest units (stroops) as a decimal string so
  * bigint math is always used — never floats.
  */
+/**
+ * The body `GET /health` answers with. Mirrors payflow-backend's own shape:
+ * `indexer` is null before the first pass, and `status` is "starting" until
+ * the lag is known.
+ */
+export interface ApiHealth {
+  /**
+   * "ok", "catching_up" or "starting" today. Left open on purpose: a backend
+   * newer than this build may answer with a status this page has never heard
+   * of, which must read as "down", not as a type error.
+   */
+  status: string;
+  network: string;
+  indexer: {
+    cursor: number;
+    latestLedger: number;
+    lag: number | null;
+    paused: boolean;
+    freshnessSeconds: number | null;
+    lastRunAt: string | null;
+    lastError: string | null;
+  } | null;
+}
+
+/** One settlement pass, as the keeper records it. */
+export interface ApiKeeperPass {
+  /** Unix seconds the pass ran at. */
+  time: number;
+  attempted: number;
+  settled: number;
+  failures: { mandateId: number; error: string }[];
+  backoff: { mandateId: number; failures: number; retryAt: number; retryIn: number }[];
+}
+
+/** `GET /api/keeper`: the recent passes, newest first. */
+export interface ApiKeeperHistory {
+  passes: ApiKeeperPass[];
+}
+
 export interface ApiPlanStats {
   /** Open mandates (active + paused). */
   subscriber_count: number;
@@ -293,9 +359,13 @@ export type StreamEvent =
  * allowed to fail: the UI falls back to reading contract state directly so the
  * app still works when the backend is down.
  */
-async function get<T>(path: string): Promise<T | null> {
+async function get<T>(path: string, options?: { headers?: Record<string, string> }): Promise<T | null> {
+  if (!apiConfigured()) return null;
   try {
-    const res = await fetch(`${config.apiUrl}${path}`, { cache: "no-store" });
+    const res = await fetch(`${config.apiUrl}${path}`, {
+      cache: "no-store",
+      headers: options?.headers,
+    });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -303,12 +373,91 @@ async function get<T>(path: string): Promise<T | null> {
   }
 }
 
-async function post<T>(path: string, body: unknown): Promise<T | null> {
+const TIMELINE_TYPES = new Set<ApiActivityType>([
+  "subscribed",
+  "charged",
+  "pause_changed",
+  "cancelled",
+  "mandate_ended",
+  "mandate_completed",
+]);
+
+function isIntegerString(value: unknown): value is string {
+  return typeof value === "string" && /^\d+$/.test(value);
+}
+
+function isNullableNonEmptyString(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || (typeof value === "string" && value.trim().length > 0);
+}
+
+function hasValue(value: unknown): boolean {
+  return value !== undefined && value !== null;
+}
+
+function isTimelineEvent(value: unknown, mandateId: number): value is ApiTimelineEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Record<string, unknown>;
+  const decimals = event.token_decimals;
+  const metadataPresent =
+    hasValue(event.token) || hasValue(event.token_symbol) || hasValue(decimals);
+  const metadataValid = metadataPresent
+    ? typeof event.token === "string" &&
+      event.token.trim().length > 0 &&
+      typeof event.token_symbol === "string" &&
+      event.token_symbol.trim().length > 0 &&
+      typeof decimals === "number" &&
+      Number.isInteger(decimals) &&
+      decimals >= 0 &&
+      decimals <= 18
+    : true;
+  return (
+    typeof event.event_id === "string" &&
+    event.event_id.trim().length > 0 &&
+    typeof event.mandate_id === "number" &&
+    Number.isSafeInteger(event.mandate_id) &&
+    event.mandate_id > 0 &&
+    event.mandate_id === mandateId &&
+    typeof event.type === "string" &&
+    TIMELINE_TYPES.has(event.type as ApiActivityType) &&
+    typeof event.ledger === "number" &&
+    Number.isSafeInteger(event.ledger) &&
+    event.ledger > 0 &&
+    (event.event_index === undefined ||
+      (typeof event.event_index === "number" &&
+        Number.isSafeInteger(event.event_index) &&
+        event.event_index >= 0)) &&
+    (event.timestamp === undefined ||
+      event.timestamp === null ||
+      (typeof event.timestamp === "number" && Number.isSafeInteger(event.timestamp) && event.timestamp >= 0)) &&
+    isNullableNonEmptyString(event.tx_hash) &&
+    (event.amount === undefined || event.amount === null || isIntegerString(event.amount)) &&
+    (event.fee === undefined || event.fee === null || isIntegerString(event.fee)) &&
+    isNullableNonEmptyString(event.token) &&
+    isNullableNonEmptyString(event.token_symbol) &&
+    metadataValid
+  );
+}
+
+async function timeline(mandateId: number): Promise<ApiTimelinePage | null> {
+  const response = await get<unknown>(`/api/mandates/${mandateId}/timeline`);
+  if (!response || typeof response !== "object") return null;
+  const events = (response as { events?: unknown }).events;
+  if (!Array.isArray(events)) return null;
+  const validEvents: ApiTimelineEvent[] = [];
+  for (const event of events) {
+    if (!isTimelineEvent(event, mandateId)) return null;
+    validEvents.push(event);
+  }
+  return { events: validEvents };
+}
+
+async function post<T>(path: string, body: unknown, options?: { headers?: Record<string, string> }): Promise<T | null> {
+  if (!apiConfigured()) return null;
   try {
     const res = await fetch(`${config.apiUrl}${path}`, {
       method: "POST",
       cache: "no-store",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...options?.headers },
       body: JSON.stringify(body),
     });
     if (!res.ok) return null;
@@ -318,11 +467,13 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
   }
 }
 
-async function del(path: string): Promise<boolean> {
+async function del(path: string, options?: { headers?: Record<string, string> }): Promise<boolean> {
+  if (!apiConfigured()) return false;
   try {
     const res = await fetch(`${config.apiUrl}${path}`, {
       method: "DELETE",
       cache: "no-store",
+      headers: options?.headers,
     });
     return res.ok;
   } catch {
@@ -330,9 +481,28 @@ async function del(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * The `Authorization: Bearer <token>` header for a merchant-only request, or an
+ * empty object when no SEP-10 session could be established (no wallet bound, a
+ * different account connected, or the backend does not serve SEP-10). An empty
+ * object leaves the request exactly as it was before SEP-10, so the public demo
+ * and backends that have not shipped #141 keep working.
+ */
+async function merchantAuthHeaders(
+  merchant: string,
+): Promise<Record<string, string>> {
+  const token = await merchantAuthToken(merchant);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function apiConfigured(): boolean {
+  return process.env.NEXT_PUBLIC_API_URL === undefined ||
+    Boolean(process.env.NEXT_PUBLIC_API_URL.trim());
+}
+
 export const api = {
   /** Whether the backend URL was explicitly supplied for this build. */
-  isConfigured: () => Boolean(process.env.NEXT_PUBLIC_API_URL?.trim()),
+  isConfigured: apiConfigured,
   stats: () => get<ProtocolStats>("/api/stats"),
   plans: (merchant?: string) =>
     get<{ plans: ApiPlan[] }>(`/api/plans${merchant ? `?merchant=${merchant}` : ""}`),
@@ -342,6 +512,7 @@ export const api = {
     get<{ mandates: ApiMandate[] }>(`/api/mandates?merchant=${merchant}`),
   charges: (mandateId: number) =>
     get<{ charges: ApiCharge[] }>(`/api/mandates/${mandateId}/charges`),
+  timeline,
   charge: async (mandateId: number, txHash: string): Promise<ApiCharge | null> => {
     const res = await get<{ charges: ApiCharge[] }>(`/api/mandates/${mandateId}/charges`);
     if (!res) return null;
@@ -387,16 +558,41 @@ export const api = {
   },
   due: () => get<{ now: number; due: ApiMandate[] }>("/api/due"),
   /**
+   * Backend liveness probe, served at the root (`/health`, not `/api/health`).
+   *
+   * Like every call here it resolves to null when the backend is unreachable.
+   * It also short-circuits to null when the build has no backend URL at all —
+   * the public demo is contract-only, and a bare fetch("/health") there would
+   * be a same-origin request against GitHub Pages that can only 404.
+   */
+  health: () => {
+    if (!api.isConfigured()) return Promise.resolve(null);
+    return get<ApiHealth>("/health");
+  },
+  /**
+   * Keeper pass history, served only when the backend runs with the keeper
+   * enabled (`KEEPER_ENABLED=true`). Null therefore means either "backend
+   * down" or "keeper off"; the status page says so rather than guessing.
+   */
+  keeper: () => {
+    if (!api.isConfigured()) return Promise.resolve(null);
+    return get<ApiKeeperHistory>("/api/keeper");
+  },
+  /**
    * Per-plan stats, proposed by payflow-backend#29.
    *
    * Returns null when the backend is unreachable or does not yet serve this
    * endpoint — the UI must hide the stats section rather than show stale zeros.
    */
   planStats: (planId: number) => get<ApiPlanStats>(`/api/plans/${planId}/stats`),
-  webhooks: (merchant: string) =>
-    get<{ webhooks: ApiWebhook[] }>(`/api/merchants/${merchant}/webhooks`).then(
-      (body) => body?.webhooks ?? null,
-    ),
+  webhooks: async (merchant: string) => {
+    const headers = await merchantAuthHeaders(merchant);
+    const body = await get<{ webhooks: ApiWebhook[] }>(
+      `/api/merchants/${merchant}/webhooks`,
+      { headers },
+    );
+    return body?.webhooks ?? null;
+  },
   /** Proposed authenticated read for payflow-backend#140. Never cache proofs. */
   webhookDeliveries: async (
     id: string,
@@ -425,12 +621,22 @@ export const api = {
    * signing secret, which the merchant must copy immediately — it is shown
    * once and never returned again.
    */
-  addWebhook: (merchant: string, body: { url: string; events: string[] }) =>
-    post<ApiWebhook>(`/api/merchants/${merchant}/webhooks`, body),
-  deleteWebhook: (merchant: string, id: string) =>
-    del(`/api/merchants/${merchant}/webhooks/${id}`),
-  testWebhook: (merchant: string, id: string) =>
-    post<{ ok: boolean }>(`/api/merchants/${merchant}/webhooks/${id}/test`, {}),
+  addWebhook: async (merchant: string, body: { url: string; events: string[] }) => {
+    const headers = await merchantAuthHeaders(merchant);
+    return post<ApiWebhook>(`/api/merchants/${merchant}/webhooks`, body, { headers });
+  },
+  deleteWebhook: async (merchant: string, id: string) => {
+    const headers = await merchantAuthHeaders(merchant);
+    return del(`/api/merchants/${merchant}/webhooks/${id}`, { headers });
+  },
+  testWebhook: async (merchant: string, id: string) => {
+    const headers = await merchantAuthHeaders(merchant);
+    return post<{ ok: boolean }>(
+      `/api/merchants/${merchant}/webhooks/${id}/test`,
+      {},
+      { headers },
+    );
+  },
   /**
    * Rotate a webhook's signing secret, proposed by payflow-backend#139.
    *
@@ -439,8 +645,14 @@ export const api = {
    * brief overlap period so the merchant can update their system without
    * missing events.
    */
-  rotateWebhookSecret: (merchant: string, id: string) =>
-    post<{ secret: string }>(`/api/merchants/${merchant}/webhooks/${id}/rotate-secret`, {}),
+  rotateWebhookSecret: async (merchant: string, id: string) => {
+    const headers = await merchantAuthHeaders(merchant);
+    return post<{ secret: string }>(
+      `/api/merchants/${merchant}/webhooks/${id}/rotate-secret`,
+      {},
+      { headers },
+    );
+  },
   /**
    * Recent charges across the protocol, proposed by payflow-backend#30.
    *

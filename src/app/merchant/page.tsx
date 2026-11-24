@@ -1,17 +1,19 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/i18n/provider";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+
 import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiPlan, type ApiWebhook, type MerchantSummary, type StreamEvent } from "@/lib/api";
 import { RevenueChart } from "@/components/RevenueChart";
 import { WebhookDeliveryHistory } from "@/components/WebhookDeliveryHistory";
 import { CohortRetentionTable } from "@/components/CohortRetentionTable";
-import { buildCsv, downloadCsv, exportFilename, type ChargeRow } from "@/lib/csv";
+import { buildCsv, buildMonthlyRevenueCsv, downloadCsv, exportFilename, monthlyRevenueFilename, type ChargeRow, type MonthlyRevenueRow } from "@/lib/csv";
 import { fillBuckets, parseRevenue, type BucketSize, type RevenuePoint } from "@/lib/revenue";
 import { parseMerchantChurn, type MerchantChurnMonth } from "@/lib/churn";
-import { chainMandatesFor, chainMerchantSummary, chainPlanSubscriberCount, chainPlansOf, chainUnpaidMandates, endable, mandateFunding, type UnpaidMandate } from "@/lib/chain";
+import { endMandatesSequentially, type EndOutcome, chainMandatesFor, chainMerchantSummary, chainPlanSubscriberCount, chainPlansOf, chainUnpaidMandates, endable, mandateFunding, type UnpaidMandate } from "@/lib/chain";
 import { config, type ConfiguredToken } from "@/lib/config";
 import { VirtualList } from "@/components/VirtualList";
 
@@ -33,8 +35,28 @@ const DEFAULT_TOKENS: readonly ConfiguredToken[] = [
     },
   },
 ];
-import { checkDiscountBps, checkDiscountCharges, discountedAmount, remainingDiscountCharges, supportsDiscounts } from "@/lib/discount";
-import { MAX_NAME_LEN, MAX_PAGE, mandatePauseUntil, mandateRefundableAmount, mandateSupportsRefund, nameByteLength, payflow, server, decodeContractError } from "@/lib/payflow";
+import {
+  checkDiscountBps,
+  checkDiscountCharges,
+  discountedAmount,
+  discountBadge,
+  remainingDiscountCharges,
+  supportsDiscounts,
+} from "@/lib/discount";
+import { MAX_NAME_LEN, MAX_PAGE, mandatePauseUntil, mandateRefundableAmount, mandateSupportsRefund, nameByteLength, decodeContractError } from "@/lib/payflow-core";
+// The SDK-backed contract module loads on demand, so the Stellar SDK
+// stays out of this route's first-load bundle.
+import { payflow, server } from "@/lib/lazy-payflow";
+
+import {
+  checkProfileName,
+  checkProfileUrl,
+  emptyProfile,
+  MAX_PROFILE_NAME_LEN,
+  MAX_PROFILE_URL_LEN,
+  profileSupports,
+  type MerchantProfile,
+} from "@/lib/profile";
 import { useWallet } from "@/lib/wallet";
 import { useStream } from "@/lib/stream";
 import{ feeSplit, fromStroops, type FeeSplit, type TokenMeta } from "@/lib/format";
@@ -50,6 +72,9 @@ import { Search } from "@/components/Search";
 
 /** How far back the revenue chart looks, in days. */
 const REVENUE_WINDOW_DAYS = 90;
+
+/** localStorage key for the dismissed onboarding checklist. */
+const ONBOARDING_DISMISSED_KEY = "payflow:merchant:onboarding-dismissed";
 
 /**
  * "subscriber pays X, you receive Y after the Z% fee".
@@ -76,6 +101,159 @@ function FeePreview({
       {formatAmount(split.fee, meta)} ({formatFeeBps(feeBps)}{tr(") · you receive")}{" "}
       {formatAmount(split.net, meta)}.
     </span>
+  );
+}
+
+/**
+ * The merchant's on-chain profile: a display name and a URL.
+ *
+ * Both fields are validated in `src/lib/profile.ts` so the same rules run in
+ * the form and in tests. The preview shows how the name and URL will appear
+ * on plan cards, which is the only place subscribers see them.
+ */
+function ProfilePanel({
+  address,
+  signXdr,
+  profile,
+  supported,
+  onSaved,
+}: {
+  address: string;
+  signXdr: Parameters<typeof payflow.setProfile>[1];
+  profile: MerchantProfile;
+  supported: boolean;
+  onSaved: () => Promise<void>;
+}) {
+  const [name, setName] = useState(profile.name);
+  const [url, setUrl] = useState(profile.url);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  // Keep the form in sync when the profile is reloaded (e.g. wallet switch).
+  useEffect(() => {
+    setName(profile.name);
+    setUrl(profile.url);
+  }, [profile.name, profile.url]);
+
+  const nameCheck = checkProfileName(name);
+  const urlCheck = checkProfileUrl(url);
+  const usable = nameCheck.ok && urlCheck.ok;
+
+  if (!supported) {
+    return (
+      <Panel
+        title="Merchant profile"
+        subtitle="A display name and URL shown to subscribers on plan cards."
+      >
+        <Notice tone="info">
+          The deployed contract does not support merchant profiles yet, so this
+          control is hidden. It will appear once the contract exposes
+          set_profile and get_profile.
+        </Notice>
+      </Panel>
+    );
+  }
+
+  async function save() {
+    if (!nameCheck.ok || !urlCheck.ok) return;
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const hash = await payflow.setProfile(address, signXdr, {
+        name: nameCheck.name,
+        url: urlCheck.url,
+      });
+      setDone(hash);
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Merchant profile"
+      subtitle="A display name and URL shown to subscribers on plan cards. Stored on-chain."
+    >
+      {error && <Notice tone="error">{error}</Notice>}
+      {done && (
+        <Notice tone="ok">
+          Profile saved. Transaction <TxLink hash={done} />
+        </Notice>
+      )}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[12rem] flex-1">
+          <label className="label" htmlFor="profile-name">
+            Display name
+          </label>
+          <input
+            id="profile-name"
+            className="input"
+            placeholder="Acme Inc."
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={busy}
+            maxLength={MAX_PROFILE_NAME_LEN}
+            aria-invalid={!nameCheck.ok}
+            aria-describedby={nameCheck.ok ? undefined : "profile-name-error"}
+          />
+          {!nameCheck.ok && (
+            <p id="profile-name-error" className="mt-1 text-sm text-danger">
+              {nameCheck.message}
+            </p>
+          )}
+        </div>
+        <div className="min-w-[16rem] flex-1">
+          <label className="label" htmlFor="profile-url">
+            URL
+          </label>
+          <input
+            id="profile-url"
+            className="input"
+            placeholder="https://acme.example"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            disabled={busy}
+            maxLength={MAX_PROFILE_URL_LEN}
+            aria-invalid={!urlCheck.ok}
+            aria-describedby={urlCheck.ok ? undefined : "profile-url-error"}
+          />
+          {!urlCheck.ok && (
+            <p id="profile-url-error" className="mt-1 text-sm text-danger">
+              {urlCheck.message}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={busy || !usable}
+          onClick={() => void save()}
+        >
+          {busy ? "Saving…" : "Save profile"}
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-lg border border-edge p-3">
+        <p className="text-xs font-medium text-muted">Preview on plan cards</p>
+        <div className="mt-2">
+          <div className="font-medium">
+            {nameCheck.ok && nameCheck.name ? nameCheck.name : "Your business name"}
+          </div>
+          {urlCheck.ok && urlCheck.url ? (
+            <div className="text-xs text-muted mono truncate" title={urlCheck.url}>
+              {urlCheck.url}
+            </div>
+          ) : (
+            <div className="text-xs text-muted">https://your-site.example</div>
+          )}
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -813,6 +991,7 @@ export default function MerchantPage() {
   // Vault balance per subscriber address, read in parallel with mandates.
   const [balances, setBalances] = useState<Record<string, bigint | null>>({});
   const [exporting, setExporting] = useState(false);
+  const [monthlyExporting, setMonthlyExporting] = useState(false);
   const [feeBps, setFeeBps] = useState<number | null>(null);
   const [bucketSize, setBucketSize] = useState<BucketSize>("day");
   /**
@@ -880,8 +1059,53 @@ export default function MerchantPage() {
    */
   const [pauseSupport, setPauseSupport] = useState(false);
 
+  /** Whether the deployed plan registry has set_plan_name; hides Edit name if not. */
+  const [renameSupport, setRenameSupport] = useState(false);
+  const [renameFor, setRenameFor] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // Ids of mandates ticked for the "End selected" batch action.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Whether the batch-end confirmation dialog is open.
+  const [confirmBatch, setConfirmBatch] = useState(false);
+  // Live progress of a running batch end, or null when idle.
+  const [batchProgress, setBatchProgress] = useState<{
+    total: number;
+    completed: number;
+    current: number | null;
+  } | null>(null);
+  // Summary of the last batch end (successes and the first failure).
+  const [batchResult, setBatchResult] = useState<EndOutcome[] | null>(null);
+
+  /**
+   * Whether the merchant has dismissed the onboarding checklist.
+   *
+   * Read after mount so the statically prerendered markup (no localStorage)
+   * and the hydrated one cannot disagree. `null` means "not yet read".
+   */
+  const [onboardingDismissed, setOnboardingDismissed] = useState<boolean | null>(null);
+  // Set when the merchant copies a plan link or opens its QR code: the
+  // checklist cannot see a link leaving the page any other way.
+  const [sharedLink, setSharedLink] = useState(false);
+  useEffect(() => {
+    try {
+      setOnboardingDismissed(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "1");
+    } catch {
+      // Storage can be unavailable (private mode, disabled cookies); treat
+      // that as "not dismissed" so the checklist still shows.
+      setOnboardingDismissed(false);
+    }
+  }, []);
+
+  /**
+   * The merchant's on-chain profile, or the empty profile when the deployed
+   * contract does not support it. `profileSupported` gates the panel so the
+   * control is hidden rather than failing every save.
+   */
+  const [profile, setProfile] = useState<MerchantProfile>(emptyProfile);
+  const [profileSupported, setProfileSupported] = useState(false);
 
   // Track who paused each mandate: "subscriber" | "merchant" | undefined
   // Updated by the SSE stream when available.
@@ -948,6 +1172,60 @@ export default function MerchantPage() {
   // merchant has asked for one — so the gap is theirs to fill, said plainly.
   const periodError = periodCheck.ok ? null : periodCheck.message;
 
+  /**
+   * Onboarding checklist state, derived from data already loaded above.
+   *
+   * - fundWallet: the merchant's own XLM/asset balance is not read here, so
+   *   this is inferred from whether any write has succeeded — a merchant who
+   *   has published a plan or has a mandate has necessarily funded the
+   *   account. Before that, the item stays open and links to Friendbot.
+   * - publishPlan: at least one plan exists.
+   * - shareLink: the merchant has opened the public page at least once; we
+   *   cannot observe a share, so this ticks when the public page is opened
+   *   from the dashboard (tracked in localStorage).
+   * - firstSubscriber: at least one mandate exists.
+   */
+  const onboarding = useMemo(() => {
+    const hasPlan = (plans?.length ?? 0) > 0;
+    const hasSubscriber = (mandates?.length ?? 0) > 0;
+    return {
+      fundWallet: hasPlan || hasSubscriber,
+      publishPlan: hasPlan,
+      shareLink: sharedLink,
+      firstSubscriber: hasSubscriber,
+    };
+  }, [plans, mandates, sharedLink]);
+
+  /**
+   * Read the merchant profile from the contract, if it supports one.
+   *
+   * The read is best-effort: a contract without `get_profile` throws, which
+   * hides the panel rather than showing a form that cannot save.
+   */
+  const loadProfile = useCallback(async () => {
+    if (!address) return;
+    try {
+      const result = await payflow.getProfile(address);
+      if (result === null) {
+        setProfileSupported(false);
+        setProfile(emptyProfile);
+        return;
+      }
+      setProfileSupported(profileSupports(result));
+      setProfile({
+        name: result.name ?? "",
+        url: result.url ?? "",
+      });
+    } catch {
+      setProfileSupported(false);
+      setProfile(emptyProfile);
+    }
+  }, [address]);
+
+  useEffect(() => {
+    void loadProfile();
+  }, [loadProfile]);
+
   const load = useCallback(async () => {
     if (!address) return;
     const [p, m, s] = await Promise.all([
@@ -958,6 +1236,7 @@ export default function MerchantPage() {
 
     let loadedPlans: ApiPlan[] = [];
     if (p) {
+      p.plans.forEach((plan) => observeContractRecord("plan", plan));
       setPlans(p.plans);
       loadedPlans = p.plans;
     } else {
@@ -979,7 +1258,11 @@ export default function MerchantPage() {
         rows = [];
       }
     }
+    rows.forEach((mandate) => observeContractRecord("mandate", mandate));
     setMandates(rows);
+    // Drop selections for mandates that no longer exist or are no longer endable.
+    const endableIds = new Set(rows.filter(endable).map((r) => r.id));
+    setSelected((prev) => new Set([...prev].filter((id) => endableIds.has(id))));
 
     // Load unpaid mandates
     try {
@@ -1205,10 +1488,25 @@ export default function MerchantPage() {
   const [publicUrl, setPublicUrl] = useState("");
   useEffect(() => {
     if (!address) return;
-    setPublicUrl(
-      `${window.location.origin}${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/m/?address=${address}`,
-    );
+    setPublicUrl(`${window.location.origin}${config.basePath}/m/?address=${address}`);
   }, [address]);
+
+  /**
+   * The link to each plan, for the same reason: the origin is only known in
+   * the browser, and the link has to carry the base path the site is served
+   * from or it 404s on the deployed demo.
+   */
+  const [planLinks, setPlanLinks] = useState<Record<number, string>>({});
+  useEffect(() => {
+    const origin = window.location.origin;
+    const links: Record<number, string> = {};
+    for (const plan of plans ?? []) links[plan.id] = subscribeLink(origin, plan.id);
+    setPlanLinks(links);
+  }, [plans]);
+
+  // The plan whose QR code is on screen. Only one at a time: the codes are
+  // large, and a list of them is noise.
+  const [qrPlan, setQrPlan] = useState<number | null>(null);
 
   // Read once per wallet, not on every reload: the protocol fee only moves
   // when an admin changes it, and this is a preview rather than a gate — if the
@@ -1260,12 +1558,101 @@ export default function MerchantPage() {
     };
   }, [address, bucketSize]);
 
-  async function run(key: string, fn: () => Promise<string>) {
+  const firstPlan = plans?.[0];
+  const firstPlanId = firstPlan?.id;
+  const firstPlanName = firstPlan?.name;
+  useEffect(() => {
+    if (!address || firstPlanId === undefined) {
+      setRenameSupport(false);
+      return;
+    }
+    let live = true;
+    void payflow
+      .supportsPlanRename(address, { id: firstPlanId, name: firstPlanName ?? "" })
+      .then((ok) => {
+        if (live) setRenameSupport(ok);
+      });
+    return () => {
+      live = false;
+    };
+  }, [address, firstPlanId, firstPlanName]);
+
+  /** Returns whether `fn` succeeded, so a caller can decide what to do next. */
+  async function run(key: string, fn: () => Promise<string>): Promise<boolean> {
     setBusy(key);
     setError(null);
     setDone(null);
     try {
       setDone(await fn());
+      await load();
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Toggle one mandate's selection checkbox. */
+  function toggleSelected(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** Select or clear every endable mandate at once. */
+  function toggleSelectAll(ids: number[]) {
+    setSelected((prev) => {
+      const allSelected = ids.length > 0 && ids.every((id) => prev.has(id));
+      return allSelected ? new Set() : new Set(ids);
+    });
+  }
+
+  /**
+   * End every selected mandate sequentially, stopping on the first failure.
+   *
+   * Progress is reported per mandate so a partial failure is visible: the
+   * summary lists which mandates ended and which one failed (with its error).
+   */
+  async function endSelected() {
+    if (!address) return;
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setConfirmBatch(false);
+    setBusy("batch-end");
+    setError(null);
+    setDone(null);
+    setBatchResult(null);
+    setBatchProgress({ total: ids.length, completed: 0, current: ids[0] ?? null });
+    try {
+      // One signature at a time, stopping at the first failure: the rest
+      // would fail for the same reason.
+      let outcomes: EndOutcome[] = [];
+      const summary = await endMandatesSequentially(
+        ids,
+        (id) => payflow.endMandate(address, signXdr, id),
+        (progress) => {
+          outcomes = progress.outcomes;
+          setBatchProgress({
+            total: progress.total,
+            completed: progress.outcomes.length,
+            current: progress.currentId ?? null,
+          });
+        },
+      );
+      setBatchProgress({ total: ids.length, completed: outcomes.length, current: null });
+      setBatchResult(outcomes);
+      if (summary.failed === 0) {
+        setSelected(new Set());
+      } else {
+        // Keep only the mandates that were not ended so the user can retry.
+        const ended = new Set(outcomes.filter((o) => o.ok).map((o) => o.id));
+        setSelected((prev) => new Set([...prev].filter((id) => !ended.has(id))));
+      }
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1327,6 +1714,63 @@ export default function MerchantPage() {
       );
     } finally {
       setExporting(false);
+    }
+  }
+
+  /** Gather charges, group them by month, and download a per-month revenue summary. */
+  async function exportMonthlyRevenue() {
+    if (!address) return;
+    setMonthlyExporting(true);
+    try {
+      const byMonth = new Map<string, MonthlyRevenueRow>();
+      for (const m of mandates ?? []) {
+        const res = await api.charges(m.id);
+        if (!res) continue;
+        for (const c of res.charges) {
+          // Best-effort date: charges carry no date, so bucket by tx close time when available.
+          let date = "—";
+          try {
+            const tx = await server.getTransaction(c.tx_hash);
+            if ("createdAt" in tx) {
+              const createdAt = tx.createdAt as number;
+              const ms = createdAt > 1e12 ? createdAt : createdAt * 1000;
+              date = new Date(ms).toISOString().slice(0, 7);
+            }
+          } catch {
+            // Contract-only mode leaves the month unknown; skip rather than mislabel.
+          }
+          if (date === "—") continue;
+          const amount = BigInt(c.amount);
+          const fee = BigInt(c.fee);
+          const existing = byMonth.get(date);
+          if (existing) {
+            existing.charges += 1;
+            existing.gross = String(BigInt(existing.gross) + amount);
+            existing.fee = String(BigInt(existing.fee) + fee);
+            existing.net = String(BigInt(existing.net) + (amount - fee));
+          } else {
+            byMonth.set(date, {
+              month: date,
+              charges: 1,
+              gross: String(amount),
+              fee: String(fee),
+              net: String(amount - fee),
+            });
+          }
+        }
+      }
+      const rows = [...byMonth.values()].sort((a, b) =>
+        a.month < b.month ? -1 : a.month > b.month ? 1 : 0,
+      );
+      const months = rows.map((r) => r.month);
+      const from = months.length ? months[0]! : "all";
+      const to = months.length ? months[months.length - 1]! : "all";
+      downloadCsv(
+        buildMonthlyRevenueCsv(rows),
+        monthlyRevenueFilename(address, from, to),
+      );
+    } finally {
+      setMonthlyExporting(false);
     }
   }
 
@@ -1409,6 +1853,30 @@ export default function MerchantPage() {
 
   return (
     <div className="space-y-6">
+      {onboardingDismissed === false && (
+        <OnboardingChecklist
+          address={address}
+          state={onboarding}
+          onDismiss={() => {
+            setOnboardingDismissed(true);
+            try {
+              window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
+            } catch {
+              // Best-effort: dismissal still applies for this session.
+            }
+          }}
+        />
+      )}
+
+      <ProfilePanel
+        key={address}
+        address={address}
+        signXdr={signXdr}
+        profile={profile}
+        supported={profileSupported}
+        onSaved={loadProfile}
+      />
+
       <MerchantChurnPanel
         key={address}
         merchant={address}
@@ -1478,12 +1946,40 @@ export default function MerchantPage() {
         />
       </div>
 
+      <ContractVersionNotice />
       {error && <Notice tone="error">{translateMessage(error)}</Notice>}
       {deactivateAllDone && (
         <Notice tone="ok">{tr("All active plans deactivated.")}</Notice>
       )}
       {done && (
         <Notice tone="ok">{tr("Done. Transaction")}{" "}<TxLink hash={done} />
+        </Notice>
+      )}
+      {batchProgress && (
+        <Notice tone={batchResult && batchResult.some((i) => !i.ok) ? "error" : "info"}>
+          <span aria-live="polite">
+            {batchProgress.current === null
+              ? `Batch end finished: ${batchProgress.completed} of ${batchProgress.total} processed.`
+              : `Ending mandate #${batchProgress.current} — ${batchProgress.completed} of ${batchProgress.total} done.`}
+          </span>
+        </Notice>
+      )}
+      {batchResult && (
+        <Notice tone={batchResult.some((i) => !i.ok) ? "error" : "ok"}>
+          <p>
+            {batchResult.filter((i) => i.ok).length} of {batchResult.length} mandates ended.
+          </p>
+          {batchResult.some((i) => !i.ok) && (
+            <ul className="mt-1 list-disc pl-5 text-sm">
+              {batchResult
+                .filter((i) => !i.ok)
+                .map((i) => (
+                  <li key={i.id}>
+                    Mandate #{i.id} failed: {i.error}
+                  </li>
+                ))}
+            </ul>
+          )}
         </Notice>
       )}
 
@@ -1690,6 +2186,13 @@ export default function MerchantPage() {
               <Link
                 href={`/m/?address=${address}`}
                 className="btn-ghost whitespace-nowrap"
+                onClick={() => {
+                  try {
+                    window.localStorage.setItem("payflow:merchant:shared-link", "1");
+                  } catch {
+                    // Best-effort: the checklist item simply stays open.
+                  }
+                }}
               >{tr("Public page")}</Link>
               <CopyButton value={publicUrl} label={tr("public page link")} />
             </div>
@@ -1872,65 +2375,136 @@ export default function MerchantPage() {
                       </dl>
                     ) : null}
                   </div>
-                  {confirmDeactivate === p.id ? (
-                    <div
-                      className="w-full mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
-                      role="alert"
-                      aria-live="polite"
-                    >
-                      <div className="font-medium text-amber-200">{tr("Confirm plan deactivation")}</div>
-                      <p className="mt-1 text-xs text-muted">{tr("This plan has")}{" "}
-                        <strong className="text-foreground font-semibold">
-                          {openCount === 1 ?tr("1 open subscription") :tr("{0} open subscriptions", { "0": openCount })}
-                        </strong>{tr(". Existing subscribers will continue to be billed on schedule until their subscriptions are individually ended or cancelled. New subscribers will no longer be able to subscribe to this plan.")}</p>
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="btn-ghost text-xs"
-                          disabled={busy !== null}
-                          onClick={() => setConfirmDeactivate(null)}
-                        >{tr("Keep active")}</button>
-                        <button
-                          type="button"
-                          className="btn-primary text-xs"
-                          disabled={busy !== null || networkMismatch}
-                          onClick={() =>
-                            void run(`toggle-${p.id}`, () =>
-                              payflow.setPlanActive(address, signXdr, p.id, false),
-                            ).then(() => setConfirmDeactivate(null))
-                          }
-                        >
-                          {busy === `toggle-${p.id}` ?tr("Deactivating…") :tr("Confirm: deactivate")}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    {renameSupport && (
                       <button
                         type="button"
                         className="btn-ghost text-xs"
-                        onClick={() => setEmbedFor(embedFor === p.id ? null : p.id)}
-                        aria-expanded={embedFor === p.id}
-                        aria-label={tr("Embed snippet for plan {0}", { "0": p.name || `#${p.id}` })}
-                      >
-                        {embedFor === p.id ?tr("Close embed") :tr("Embed")}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-ghost"
                         disabled={busy !== null || networkMismatch}
                         onClick={() => {
-                          if (p.active) {
-                            setConfirmDeactivate(p.id);
-                          } else {
-                            void run(`toggle-${p.id}`, () =>
-                              payflow.setPlanActive(address, signXdr, p.id, true),
-                            );
-                          }
+                          setRenameFor(p.id);
+                          setRenameValue(p.name);
                         }}
-                      >
-                        {p.active ?tr("Deactivate") :tr("Activate")}
-                      </button>
+                        aria-label={tr("Edit name of plan {0}", { "0": p.name || `#${p.id}` })}
+                      >{tr("Edit name")}</button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs"
+                      onClick={() => setEmbedFor(embedFor === p.id ? null : p.id)}
+                      aria-expanded={embedFor === p.id}
+                      aria-label={tr("Embed snippet for plan {0}", { "0": p.name || `#${p.id}` })}
+                    >
+                      {embedFor === p.id ?tr("Close embed") :tr("Embed")}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      disabled={busy !== null || networkMismatch}
+                      onClick={() => {
+                        if (p.active) {
+                          setError(null);
+                          setConfirmDeactivate(p.id);
+                        } else {
+                          void run(`toggle-${p.id}`, () =>
+                            payflow.setPlanActive(address, signXdr, p.id, true),
+                          );
+                        }
+                      }}
+                    >
+                      {p.active ?tr("Deactivate") :tr("Activate")}
+                    </button>
+                  </div>
+                  {confirmDeactivate === p.id && (
+                    <ConfirmDialog
+                      open
+                      onCancel={() => setConfirmDeactivate(null)}
+                      onConfirm={() =>
+                        void run(`toggle-${p.id}`, () =>
+                          payflow.setPlanActive(address, signXdr, p.id, false),
+                        ).then((ok) => {
+                          if (ok) setConfirmDeactivate(null);
+                        })
+                      }
+                      title={confirmTitle(tr("Deactivate plan {0}", { "0": p.name || `#${p.id}` }))}
+                      confirmLabel={tr("Confirm: deactivate")}
+                      cancelLabel={tr("Keep active")}
+                      busy={busy === `toggle-${p.id}`}
+                      busyLabel={tr("Deactivating…")}
+                      confirmDisabled={networkMismatch}
+                      danger
+                      error={error ?? undefined}
+                    >
+                      <p className="text-sm text-muted">{tr("This plan has")}{" "}
+                        <strong className="text-foreground font-semibold">
+                          {openCount === 1 ?tr("1 open subscription") :tr("{0} open subscriptions", { "0": openCount })}
+                        </strong>{tr(". Existing subscribers will continue to be billed on schedule until their subscriptions are individually ended or cancelled. New subscribers will no longer be able to subscribe to this plan.")}
+                      </p>
+                    </ConfirmDialog>
+                  )}
+                  {renameFor === p.id && (
+                    <form
+                      className="w-full mt-3 space-y-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (validatePlanNameLocal(renameValue) !== null) return;
+                        void run(`rename-${p.id}`, () =>
+                          payflow.setPlanName(address, signXdr, p.id, renameValue),
+                        ).then(() => setRenameFor(null));
+                      }}
+                    >
+                      <label className="label" htmlFor={`rename-${p.id}`}>{tr("New plan name")}</label>
+                      <input
+                        id={`rename-${p.id}`}
+                        className="input"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        aria-invalid={validatePlanNameLocal(renameValue) !== null}
+                        aria-describedby={`rename-error-${p.id}`}
+                      />
+                      <p id={`rename-error-${p.id}`} className="text-sm text-danger" role="alert">
+                        {nameByteLength(renameValue.trim()) > MAX_NAME_LEN
+                          ? `${tr("Too long —")} ${MAX_NAME_LEN} ${tr("bytes maximum.")}`
+                          : ""}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="btn-ghost text-xs" disabled={busy !== null} onClick={() => setRenameFor(null)}>{tr("Cancel")}</button>
+                        <button
+                          type="submit"
+                          className="btn-primary text-xs"
+                          disabled={busy !== null || networkMismatch || validatePlanNameLocal(renameValue) !== null}
+                        >{busy === `rename-${p.id}` ? tr("Saving…") : tr("Save name")}</button>
+                      </div>
+                    </form>
+                  )}
+                  <div className="flex w-full flex-wrap items-center gap-2 mt-2">
+                    <CopyButton
+                      value={planLinks[p.id] ?? ""}
+                      label={`link to ${p.name || `plan #${p.id}`}`}
+                    />
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs"
+                      aria-expanded={qrPlan === p.id}
+                      onClick={() => {
+                        setQrPlan(qrPlan === p.id ? null : p.id);
+                        setSharedLink(true);
+                      }}
+                    >
+                      {qrPlan === p.id ? tr("Hide QR") : tr("Show QR")}
+                    </button>
+                  </div>
+                  {qrPlan === p.id && planLinks[p.id] && (
+                    <div className="w-full mt-3 flex flex-col items-start gap-2 rounded-lg border border-edge bg-surface/50 p-3">
+                      <QrCode
+                        data={planLinks[p.id] ?? ""}
+                        label={`QR code for the link to ${p.name || `plan #${p.id}`}`}
+                      />
+                      {/* The link in text: a camera reads the code, a screen
+                          reader reads this. */}
+                      <code className="break-all font-mono text-[11px] text-muted">
+                        {planLinks[p.id]}
+                      </code>
                     </div>
                   )}
                   {embedFor === p.id && (
@@ -2016,6 +2590,17 @@ export default function MerchantPage() {
                 {exporting ?tr("Exporting…") :tr("Export CSV")}
               </button>
             )}
+            {subscribersTab === "all" && (
+              <button
+                type="button"
+                className="btn-ghost mono text-sm"
+                disabled={monthlyExporting || mandates?.length === 0 || networkMismatch}
+                onClick={() => void exportMonthlyRevenue()}
+                aria-label={tr("Download monthly revenue summary")}
+              >
+                {monthlyExporting ? tr("Exporting…") : tr("Download monthly revenue summary")}
+              </button>
+            )}
           </div>
         }
       >
@@ -2026,6 +2611,57 @@ export default function MerchantPage() {
           aria-labelledby="subscribers-all-tab"
           hidden={subscribersTab !== "all"}
         >
+        {mandates !== null && mandates.some(endable) && (
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-edge p-3">
+            <span className="text-sm text-muted" aria-live="polite">
+              {selected.size} selected
+            </span>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={busy !== null}
+              onClick={() => toggleSelectAll(mandates.filter(endable).map((m) => m.id))}
+            >
+              {mandates.filter(endable).every((m) => selected.has(m.id))
+                ? "Clear selection"
+                : "Select all"}
+            </button>
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={busy !== null || networkMismatch || selected.size === 0}
+              onClick={() => setConfirmBatch(true)}
+            >
+              {busy === "batch-end" ? "Ending…" : `End selected (${selected.size})`}
+            </button>
+          </div>
+        )}
+        {confirmBatch && (
+          <div className="mb-3 rounded-lg border border-danger/40 bg-danger/10 p-3">
+            <p className="text-sm">
+              End {selected.size} {selected.size === 1 ? "mandate" : "mandates"} for good? This
+              cannot be undone.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={busy !== null}
+                onClick={() => setConfirmBatch(false)}
+              >
+                Keep
+              </button>
+              <button
+                type="button"
+                className="btn-danger"
+                disabled={busy !== null || networkMismatch}
+                onClick={() => void endSelected()}
+              >
+                {busy === "batch-end" ? "Ending…" : `Confirm: end ${selected.size}`}
+              </button>
+            </div>
+          </div>
+        )}
         {mandates === null ? (
           <SkeletonRows rows={3} label={tr("Loading subscribers")} />
         ) : mandates.length === 0 ? (
@@ -2066,6 +2702,15 @@ export default function MerchantPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
+                        {endable(m) && (
+                          <input
+                            type="checkbox"
+                            checked={selected.has(m.id)}
+                            onChange={() => toggleSelected(m.id)}
+                            disabled={busy !== null}
+                            aria-label={`Select subscription #${m.id} for batch end`}
+                          />
+                        )}
                         <Link
                           href={`/mandates/?id=${m.id}`}
                           className="font-medium hover:underline text-soft focus:outline-none focus:ring-1 focus:ring-accent rounded"
@@ -2381,30 +3026,19 @@ export default function MerchantPage() {
       <WebhooksPanel key={`webhooks:${address}`} merchant={address} apiConfigured={api.isConfigured()} />
 
       {confirmDeactivateAll && (
-        <Dialog
+        <ConfirmDialog
           open={confirmDeactivateAll}
-          onClose={() => setConfirmDeactivateAll(false)}
-          title={tr("Deactivate all active plans")}
-          actions={
-            <>
-              <button
-                type="button"
-                className="btn-ghost"
-                disabled={busy !== null || deactivateAllProgress !== null}
-                onClick={() => setConfirmDeactivateAll(false)}
-              >{tr("Keep active")}</button>
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={busy !== null || networkMismatch || deactivateAllProgress !== null}
-                onClick={() => void deactivateAllPlans()}
-              >
-                {deactivateAllProgress
-                  ?tr("Deactivating… ({0}/{1} pages)", { "0": deactivateAllProgress.current, "1": deactivateAllProgress.total })
-                  :tr("Confirm: deactivate all")}
-              </button>
-            </>
+          onCancel={() => setConfirmDeactivateAll(false)}
+          onConfirm={() => void deactivateAllPlans()}
+          title={tr("Deactivate all active plans?")}
+          confirmLabel={tr("Confirm deactivation")}
+          busy={deactivateAllProgress !== null}
+          busyLabel={
+            deactivateAllProgress
+              ? tr("Deactivating… ({0}/{1} pages)", { "0": deactivateAllProgress.current, "1": deactivateAllProgress.total })
+              : undefined
           }
+          confirmDisabled={busy !== null || networkMismatch}
         >
           <div className="space-y-2 text-sm">
             {(() => {
@@ -2428,7 +3062,7 @@ export default function MerchantPage() {
               );
             })()}
           </div>
-        </Dialog>
+        </ConfirmDialog>
       )}
     </div>
   );

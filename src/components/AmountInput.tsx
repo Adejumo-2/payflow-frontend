@@ -12,9 +12,10 @@ import { canonicalAmount, normaliseAmountInput } from "@/lib/format";
  * accepts `1234.5`, so this field takes what their keyboard produces —
  * `1,234.5`, `1.234,5`, `1,5` — and all of them parse to the same bigint
  * stroops through `parseAmount` at submit time. While typing, the field is
- * filtered to digits plus at most one separator; a fraction longer than the
- * token's decimals stays visible and is reported as an error rather than
- * silently truncated, because dropping digits changes the amount.
+ * filtered to an optional leading minus, digits plus at most one separator;
+ * a negative, a fraction longer than the token's decimals, or an amount above
+ * the contract's `i128` maximum stays visible and is reported as an error
+ * rather than silently changed, because altering digits changes the amount.
  *
  * The parent page owns the raw string state and reads the bigint back with
  * `parseAmount(value, decimals)` (or `checkAmount`) when the user submits.

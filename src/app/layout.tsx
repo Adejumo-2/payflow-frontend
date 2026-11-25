@@ -3,6 +3,7 @@ import "./globals.css";
 import { I18nProvider } from "@/i18n/provider";
 import { WalletProvider } from "@/lib/wallet";
 import { WalletLayoutInner } from "@/components/WalletLayoutInner";
+import { TelemetryLoader } from "@/components/TelemetryLoader";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -57,6 +58,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <I18nProvider>
         <WalletProvider>
           <WalletLayoutInner>{children}</WalletLayoutInner>
+          {/* No markup: imports the telemetry chunk only after the page is
+              interactive and idle. */}
+          <TelemetryLoader />
         </WalletProvider>
         </I18nProvider>
       </body>

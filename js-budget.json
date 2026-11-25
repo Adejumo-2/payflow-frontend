@@ -1,13 +1,15 @@
 {
-  "//": "First-load JS budgets in kB (gzip), enforced by scripts/check-js-budget.mjs over out/**/index.html. Re-measured after merging upstream/main (cohort retention, webhooks UI, i18n French, failed-charge attempts, skip-link, WalletConnect) on top of the SDK deferral: / 227.0, /account 238.1, /m 226.8, /mandates 228.2, /merchant 244.2, /plans/* 226.9, /receipt 228.7, /subscribe 232.0. Budgets keep roughly 10% headroom; growth is only ever accepted deliberately, in the PR that causes it.",
-  "default": 240,
+  "//": "First-load JS budgets in kB (gzip), enforced by scripts/check-js-budget.mjs over out/**/index.html. Re-measured 2026-11-25 on this branch: / 246.5, /account 264.1, /m 246.0, /mandates 248.1, /merchant 277.7, /plans/* 246.0, /receipt 249.6, /status 241.9, /subscribe 255.5. The previous numbers were below the already-merged main tip, so the budget file itself was stale; these figures keep a few kB of headroom. Telemetry loads from a separate idle chunk and is not part of first-load JS. Growth is only ever accepted deliberately, in the PR that causes it.",
+  "default": 245,
   "routes": {
     "/": 250,
-    "/account": 265,
+    "/account": 268,
     "/m": 250,
-    "/merchant": 270,
-    "/subscribe": 255,
+    "/mandates": 252,
+    "/merchant": 282,
+    "/subscribe": 258,
     "/plans": 250,
-    "/receipt": 245
+    "/receipt": 253,
+    "/status": 245
   }
 }

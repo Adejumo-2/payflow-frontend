@@ -5,9 +5,11 @@
     "/": 280,
     "/account": 300,
     "/m": 280,
+    "/mandates": 280,
     "/merchant": 315,
     "/subscribe": 290,
     "/plans": 280,
-    "/receipt": 285
+    "/receipt": 285,
+    "/status": 270
   }
 }

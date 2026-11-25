@@ -3,7 +3,7 @@
 import { useI18n } from "@/i18n/provider";
 
 import { notFound } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, type ApiMandate, type ApiPlan } from "@/lib/api";
 import { chainMandatesFor, chainPlans, planChargeRow, type PlanCharge } from "@/lib/chain";
@@ -15,7 +15,14 @@ import { config } from "@/lib/config";
 import { payflow } from "@/lib/lazy-payflow";
 import { useWallet } from "@/lib/wallet";
 
-import { AddressLink, Badge, Empty, Notice, Panel, TxLink } from "@/components/ui";
+import { AddressLink, Badge, Empty, Notice, Panel, SkeletonPlanDetail, TxLink } from "@/components/ui";
+import { cursorPage, TABLE_PAGE_SIZE } from "@/lib/pagination";
+
+const PaginationControl = lazy(() =>
+  import("@/components/Pagination").then((module) => ({
+    default: module.Pagination,
+  })),
+);
 
 type ChargeRow = PlanCharge;
 
@@ -29,6 +36,7 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
   const wanted = Number(planId);
   const [plan, setPlan] = useState<ApiPlan | null>(null);
   const [charges, setCharges] = useState<ChargeRow[]>([]);
+  const [chargesCursor, setChargesCursor] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [direct, setDirect] = useState(false);
@@ -37,6 +45,7 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
   const [done, setDone] = useState<string | null>(null);
 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const visibleCharges = cursorPage(charges, chargesCursor);
   const walletState = useRef({ address, networkMismatch });
   // Mirrored in an effect: only the signing flow reads it (event handler /
   // async callback), never render.
@@ -106,11 +115,7 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
   }, [load]);
 
   if (loading) {
-    return (
-      <Panel title={tr("Plan")}>
-        <Empty>{tr("Loading plan…")}</Empty>
-      </Panel>
-    );
+    return <SkeletonPlanDetail label={tr("Loading plan")} />;
   }
 
   if (!plan) {
@@ -161,9 +166,9 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
         if (reason) throw new Error(reason);
       };
       check();
-      const hash = await payflow.subscribe(address, async (xdr) => {
+      const hash = await payflow.subscribe(address, async (xdr, description) => {
         check();
-        return signXdr(xdr);
+        return signXdr(xdr, description);
       }, subscribePlanId, limit);
       setDone(hash);
       setMaxCharges("");
@@ -179,9 +184,9 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
       {direct && (
         <Notice tone="info">{tr("Reading this plan directly from the contract — the indexer is not reachable, so charge history may be incomplete.")}</Notice>
       )}
-      {error && <Notice tone="error">{translateMessage(error)}</Notice>}
+      {error && <Notice tone="error" role="alert">{translateMessage(error)}</Notice>}
       {done && (
-        <Notice tone="ok">{tr("Subscribed. Transaction")}{" "}<TxLink hash={done} />
+        <Notice tone="ok" role="status">{tr("Subscribed. Transaction")}{" "}<TxLink hash={done} />
         </Notice>
       )}
 
@@ -211,7 +216,8 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
         {charges.length === 0 ? (
           <Empty>{tr("No charges settled against this plan yet.")}</Empty>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr>
@@ -224,7 +230,7 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
                 </tr>
               </thead>
               <tbody>
-                {charges.map((c) => (
+                {visibleCharges.map((c) => (
                   <tr key={c.txHash} className="border-t border-edge">
                     <td className="py-2">{c.mandateId}</td>
                     <td className="py-2">
@@ -240,7 +246,18 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
                 ))}
               </tbody>
             </table>
-          </div>
+            </div>
+            {charges.length > TABLE_PAGE_SIZE && (
+              <Suspense fallback={null}>
+                <PaginationControl
+                  cursor={chargesCursor}
+                  limit={TABLE_PAGE_SIZE}
+                  total={charges.length}
+                  onCursorChange={setChargesCursor}
+                />
+              </Suspense>
+            )}
+          </>
         )}
       </Panel>
 
@@ -260,6 +277,16 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
               onChange={(e) => setMaxCharges(e.target.value)}
               aria-invalid={!chargeLimitCheck.ok || undefined}
               aria-describedby={!chargeLimitCheck.ok ? "plan-charge-limit-error" : undefined}
+              onKeyDown={(e) => {
+                // Enter is the natural keyboard submit for the only field in
+                // this form; without it a keyboard user must tab past it to
+                // reach Subscribe.
+                if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                e.preventDefault();
+                if (!busy && address && !networkMismatch && unavailable === null) {
+                  void subscribe();
+                }
+              }}
             />
             {!chargeLimitCheck.ok && (
               <p id="plan-charge-limit-error" role="alert" className="mt-1 text-sm text-danger">

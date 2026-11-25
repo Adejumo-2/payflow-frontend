@@ -89,7 +89,7 @@ import { SyncLagIndicator } from "@/components/SyncLagIndicator";
 import { Money } from "@/components/Money";
 import { NotificationCentre } from "@/components/NotificationCentre";
 import { evaluateMerchantNotifications } from "@/lib/notifications";
-import { subscribeLink } from "@/lib/share";
+import { planLink } from "@/lib/share";
 
 const PERIOD_OPTIONS = [
   { label: "Every minute (demo)", value: 60 },
@@ -1532,7 +1532,7 @@ export default function MerchantPage() {
   useEffect(() => {
     const origin = window.location.origin;
     const links: Record<number, string> = {};
-    for (const plan of plans ?? []) links[plan.id] = subscribeLink(origin, plan.id);
+    for (const plan of plans ?? []) links[plan.id] = planLink(origin, plan.id);
     setPlanLinks(links);
   }, [plans]);
 

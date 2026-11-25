@@ -7,7 +7,7 @@ import Link from "next/link";
 
 import dynamic from "next/dynamic";
 import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiPlan, type ApiWebhook, type MerchantSummary, type StreamEvent } from "@/lib/api";
-import { buildCsv, buildMonthlyRevenueCsv, downloadCsv, exportFilename, monthlyRevenueFilename, type ChargeRow, type MonthlyRevenueRow } from "@/lib/csv";
+import { buildCsv, buildMonthlyRevenueCsv, buildSubscribersCsv, downloadCsv, exportFilename, monthlyRevenueFilename, subscribersFilename, type ChargeRow, type MonthlyRevenueRow, type SubscriberRow } from "@/lib/csv";
 import { fillBuckets, parseRevenue, type BucketSize, type RevenuePoint } from "@/lib/revenue";
 import { parseMerchantChurn, type MerchantChurnMonth } from "@/lib/churn";
 import { endMandatesSequentially, type EndOutcome, chainMerchantMandatesPage, chainMerchantSummary, chainPlanSubscriberCount, chainPlansOf, chainUnpaidMandates, endable, mandateFunding, mergeMandates, MERCHANT_MANDATE_PAGE_SIZE, type UnpaidMandate } from "@/lib/chain";

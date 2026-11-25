@@ -109,6 +109,11 @@ function WebhookHistorySkeleton() {
   return <div className="mt-3"><SkeletonRows rows={2} label={tr("Loading history…")} /></div>;
 }
 
+function MrrTrendSkeleton() {
+  const { t: tr } = useI18n();
+  return <SkeletonRows rows={2} label={tr("Loading…")} />;
+}
+
 function QrCodeSkeleton() {
   const { t: tr } = useI18n();
   return <div className="mt-3"><SkeletonRows rows={1} label={tr("Loading…")} /></div>;
@@ -127,6 +132,11 @@ const CohortRetentionTable = dynamic(
 const WebhookDeliveryHistory = dynamic(
   () => import("@/components/WebhookDeliveryHistory").then((module) => module.WebhookDeliveryHistory),
   { ssr: false, loading: () => <WebhookHistorySkeleton /> },
+);
+
+const MrrTrendChart = dynamic(
+  () => import("@/components/MrrTrendChart").then((module) => module.MrrTrendChart),
+  { ssr: false, loading: () => <MrrTrendSkeleton /> },
 );
 
 const QrCode = dynamic(
@@ -2106,6 +2116,13 @@ export default function MerchantPage() {
         )}
       </Panel>
 
+      <Panel
+        title={tr("Committed MRR")}
+        subtitle={tr("Monthly recurring revenue committed by active subscriptions. Estimated from each mandate's charge history.")}
+      >
+        <MrrTrendChart mandates={mandates} meta={tokenMeta} />
+      </Panel>
+
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat
           label={tr("Collected")}
@@ -3209,12 +3226,18 @@ export default function MerchantPage() {
                 const badge = discountBadge(m);
                 const overdueHours = Math.floor(unpaid.overdueDuration / 3600);
                 const overdueDays = Math.floor(unpaid.overdueDuration / 86400);
+                // Plural keys rather than a suffix: German and French pluralise
+                // nouns differently, so concatenating an English "s" is wrong.
                 const overdueText =
                   overdueDays > 0
-                    ?tr("{0} day{1}", { "0": overdueDays, "1": overdueDays === 1 ? "" :tr("s") })
+                    ? overdueDays === 1
+                      ? tr("1 day")
+                      : tr("{0} days", { "0": overdueDays })
                     : overdueHours > 0
-                      ?tr("{0} hour{1}", { "0": overdueHours, "1": overdueHours === 1 ? "" :tr("s") })
-                      :tr("less than 1 hour");
+                      ? overdueHours === 1
+                        ? tr("1 hour")
+                        : tr("{0} hours", { "0": overdueHours })
+                      : tr("less than 1 hour");
                 return (
                   <div
                     key={m.id}

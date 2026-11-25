@@ -63,6 +63,16 @@ describe("persistent locale without remounting wallet or form state", () => {
     act(() => window.dispatchEvent(new StorageEvent("storage", { key: LOCALE_STORAGE_KEY, newValue: null })));
     expect(screen.getByTestId("locale").textContent).toBe("en");
   });
+  it("restores German, localizes decimal entry and announces the language", async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, "de");
+    render(app());
+    await screen.findByText("Keine Wallet verbunden");
+    expect(document.documentElement.lang).toBe("de");
+    // "1.234" is a thousands-grouped value in German, not a decimal fraction.
+    expect(screen.getByTestId("stroops").textContent).toBe("12340000000");
+    expect(screen.getByLabelText("Betrag")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Sprache" })).toBeTruthy();
+  });
   it("works when localStorage access is blocked", async () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });

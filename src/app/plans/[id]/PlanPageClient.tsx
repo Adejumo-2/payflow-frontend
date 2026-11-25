@@ -8,6 +8,7 @@ import Link from "next/link";
 import { api, type ApiMandate, type ApiPlan } from "@/lib/api";
 import { chainMandatesFor, chainPlans, planChargeRow, type PlanCharge } from "@/lib/chain";
 import { planAvailability } from "@/lib/availability";
+import { checkChargeLimit } from "@/lib/subscribe-confirmation";
 import { config } from "@/lib/config";
 // The SDK-backed contract module loads on demand, so the Stellar SDK
 // stays out of this route's first-load bundle.
@@ -118,6 +119,7 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
   const unavailable = plan.active !== 1
     ? "This plan is closed to new subscriptions."
     : planAvailability(plan, now).reason;
+  const chargeLimitCheck = checkChargeLimit(maxCharges);
 
   async function subscribe() {
     if (!address) {
@@ -133,11 +135,11 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
       setError(blocked);
       return;
     }
-    const limit = Number(maxCharges?.trim()) || 0;
-    if (!Number.isInteger(limit) || limit < 0) {
-      setError(tr("Charge limit must be a whole number, or 0 for open-ended."));
+    if (!chargeLimitCheck.ok) {
+      document.getElementById("plan-charge-limit")?.focus();
       return;
     }
+    const limit = chargeLimitCheck.limit;
     setBusy(true);
     setError(null);
     setDone(null);
@@ -182,20 +184,20 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
       <Panel title={plan.name ||tr("Plan #{0}", { "0": plan.id })}>
         <div className="grid gap-4 sm:grid-cols-3">
           <div>
-            <label className="label">{tr("Price")}</label>
+            <span className="label">{tr("Price")}</span>
             <div className="text-2xl font-semibold tabular-nums">
               {formatTokenValue(plan.amount)}{" "}{tr("XLM")}</div>
           </div>
           <div>
-            <label className="label">{tr("Billing period")}</label>
+            <span className="label">{tr("Billing period")}</span>
             <div className="text-sm text-muted">{formatPeriod(plan.period)}</div>
           </div>
           <div>
-            <label className="label">{tr("Merchant")}</label>
+            <span className="label">{tr("Merchant")}</span>
             <AddressLink value={plan.merchant} />
           </div>
           <div>
-            <label className="label">{tr("Status")}</label>
+            <span className="label">{tr("Status")}</span>
             <Badge status={plan.active === 1 ? "Active" : "Paused"} />
           </div>
         </div>
@@ -252,17 +254,14 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
               placeholder="0"
               value={maxCharges}
               onChange={(e) => setMaxCharges(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter is the natural keyboard submit for the only field in
-                // this form; without it a keyboard user must tab past it to
-                // reach Subscribe.
-                if (e.key !== "Enter") return;
-                e.preventDefault();
-                if (!busy && address && !networkMismatch && unavailable === null) {
-                  void subscribe();
-                }
-              }}
+              aria-invalid={!chargeLimitCheck.ok || undefined}
+              aria-describedby={!chargeLimitCheck.ok ? "plan-charge-limit-error" : undefined}
             />
+            {!chargeLimitCheck.ok && (
+              <p id="plan-charge-limit-error" role="alert" className="mt-1 text-sm text-danger">
+                {translateMessage(chargeLimitCheck.message)}
+              </p>
+            )}
           </div>
           <button
             type="button"

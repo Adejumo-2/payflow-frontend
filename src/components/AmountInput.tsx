@@ -65,7 +65,7 @@ export function AmountInput({
     previousLocale.current = locale;
     // Keep the exact amount while changing its decimal mark. Do not alter invalid drafts.
     if (canonical !== null) {
-      const next = locale === "fr" ? canonical.replace(".", ",") : canonical;
+      const next = locale === "fr" || locale === "de" ? canonical.replace(".", ",") : canonical;
       if (next !== value) onChange(next);
     }
   }, [locale, value, onChange]);

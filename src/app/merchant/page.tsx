@@ -2,17 +2,15 @@
 
 import { useI18n } from "@/i18n/provider";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
+import dynamic from "next/dynamic";
 import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiPlan, type ApiWebhook, type MerchantSummary, type StreamEvent } from "@/lib/api";
-import { RevenueChart } from "@/components/RevenueChart";
-import { WebhookDeliveryHistory } from "@/components/WebhookDeliveryHistory";
-import { CohortRetentionTable } from "@/components/CohortRetentionTable";
-import { buildCsv, buildMonthlyRevenueCsv, buildSubscribersCsv, downloadCsv, exportFilename, monthlyRevenueFilename, subscribersFilename, type ChargeRow, type MonthlyRevenueRow, type SubscriberRow } from "@/lib/csv";
+import { buildCsv, buildMonthlyRevenueCsv, downloadCsv, exportFilename, monthlyRevenueFilename, type ChargeRow, type MonthlyRevenueRow } from "@/lib/csv";
 import { fillBuckets, parseRevenue, type BucketSize, type RevenuePoint } from "@/lib/revenue";
 import { parseMerchantChurn, type MerchantChurnMonth } from "@/lib/churn";
-import { endMandatesSequentially, type EndOutcome, chainMandatesFor, chainMerchantSummary, chainPlanSubscriberCount, chainPlansOf, chainUnpaidMandates, endable, mandateFunding, type UnpaidMandate } from "@/lib/chain";
+import { endMandatesSequentially, type EndOutcome, chainMerchantMandatesPage, chainMerchantSummary, chainPlanSubscriberCount, chainPlansOf, chainUnpaidMandates, endable, mandateFunding, mergeMandates, MERCHANT_MANDATE_PAGE_SIZE, type UnpaidMandate } from "@/lib/chain";
 import { config, type ConfiguredToken } from "@/lib/config";
 import { VirtualList } from "@/components/VirtualList";
 
@@ -66,7 +64,6 @@ import { countOpenMandates, filterAndSortPlans, planDisplayName } from "@/lib/pl
 import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/price";
 import { AmountInput } from "@/components/AmountInput";
 import { CopyButton } from "@/components/CopyButton";
-import { QrCode } from "@/components/QrCode";
 // Mirrors payflow.validatePlanName, kept here so the form can check a name
 // without the SDK-backed module in this route's first-load bundle.
 function validatePlanNameLocal(name: string): string | null {
@@ -90,6 +87,62 @@ import { Money } from "@/components/Money";
 import { NotificationCentre } from "@/components/NotificationCentre";
 import { evaluateMerchantNotifications } from "@/lib/notifications";
 import { planLink } from "@/lib/share";
+
+function RevenueChartSkeleton() {
+  const { t: tr } = useI18n();
+  return <SkeletonRows rows={2} label={tr("Loading revenue")} />;
+}
+
+function CohortRetentionSkeleton() {
+  return (
+    <Panel
+      title="Cohort retention"
+      subtitle="Percentage of each signup month's subscribers still active in subsequent months. Higher percentages indicate better retention."
+    >
+      <SkeletonRows rows={3} label="Loading cohort retention data" />
+    </Panel>
+  );
+}
+
+function WebhookHistorySkeleton() {
+  const { t: tr } = useI18n();
+  return <div className="mt-3"><SkeletonRows rows={2} label={tr("Loading history…")} /></div>;
+}
+
+function MrrTrendSkeleton() {
+  const { t: tr } = useI18n();
+  return <SkeletonRows rows={2} label={tr("Loading…")} />;
+}
+
+function QrCodeSkeleton() {
+  const { t: tr } = useI18n();
+  return <div className="mt-3"><SkeletonRows rows={1} label={tr("Loading…")} /></div>;
+}
+
+const RevenueChart = dynamic(
+  () => import("@/components/RevenueChart").then((module) => module.RevenueChart),
+  { ssr: false, loading: () => <RevenueChartSkeleton /> },
+);
+
+const CohortRetentionTable = dynamic(
+  () => import("@/components/CohortRetentionTable").then((module) => module.CohortRetentionTable),
+  { ssr: false, loading: () => <CohortRetentionSkeleton /> },
+);
+
+const WebhookDeliveryHistory = dynamic(
+  () => import("@/components/WebhookDeliveryHistory").then((module) => module.WebhookDeliveryHistory),
+  { ssr: false, loading: () => <WebhookHistorySkeleton /> },
+);
+
+const MrrTrendChart = dynamic(
+  () => import("@/components/MrrTrendChart").then((module) => module.MrrTrendChart),
+  { ssr: false, loading: () => <MrrTrendSkeleton /> },
+);
+
+const QrCode = dynamic(
+  () => import("@/components/QrCode").then((module) => module.QrCode),
+  { ssr: false, loading: () => <QrCodeSkeleton /> },
+);
 
 const PERIOD_OPTIONS = [
   { label: "Every minute (demo)", value: 60 },
@@ -1025,6 +1078,12 @@ export default function MerchantPage() {
   >({});
   // Vault balance per subscriber address, read in parallel with mandates.
   const [balances, setBalances] = useState<Record<string, bigint | null>>({});
+  // Total mandates behind the merchant index, when the source can say.
+  const [mandateTotal, setMandateTotal] = useState<number | null>(null);
+  // True once every page has been read (or the source stopped returning rows).
+  const [mandatesComplete, setMandatesComplete] = useState(false);
+  const [moreBusy, setMoreBusy] = useState(false);
+  const [moreError, setMoreError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [monthlyExporting, setMonthlyExporting] = useState(false);
   // Independent of the batch-end selection: a merchant may want to export a
@@ -1273,40 +1332,101 @@ export default function MerchantPage() {
     void loadProfile();
   }, [loadProfile]);
 
+  // Mirrors the live wallet address so a page that resolves after the wallet
+  // switched accounts cannot write the previous merchant's rows onto the new
+  // one's dashboard.
+  const addressRef = useRef(address);
+  useEffect(() => {
+    addressRef.current = address;
+  }, [address]);
+
+  /**
+   * One page of the merchant's mandates: newest first, `offset` rows already
+   * shown. The indexer is preferred; contract state is the fallback, exactly
+   * as for the rest of the dashboard.
+   */
+  const readMandatePage = useCallback(
+    async (
+      merchant: string,
+      offset: number,
+    ): Promise<{ rows: ApiMandate[]; total: number | null; done: boolean }> => {
+      const fromApi = api.isConfigured()
+        ? await api.mandatesFor(merchant, { offset, limit: MERCHANT_MANDATE_PAGE_SIZE })
+        : null;
+      if (fromApi) {
+        return {
+          rows: fromApi.mandates,
+          total: null,
+          // A short page is the only portable "no more rows" signal an
+          // optional paging API can give; a backend that ignores paging
+          // simply answers everything on the first page.
+          done: fromApi.mandates.length < MERCHANT_MANDATE_PAGE_SIZE,
+        };
+      }
+      const page = await chainMerchantMandatesPage(
+        merchant,
+        merchant,
+        offset,
+        MERCHANT_MANDATE_PAGE_SIZE,
+      );
+      return {
+        rows: page.rows,
+        total: page.total,
+        done: page.total !== null && offset + page.rows.length >= page.total,
+      };
+    },
+    [],
+  );
+
+  /** Read vault balances for subscribers not already looked up. */
+  const readBalances = useCallback(
+    async (subscribers: string[]): Promise<Record<string, bigint | null>> => {
+      if (!address) return {};
+      const settled = await Promise.allSettled(
+        subscribers.map((sub) => payflow.vaultBalance(address, sub, config.contracts.token)),
+      );
+      const found: Record<string, bigint | null> = {};
+      subscribers.forEach((sub, i) => {
+        if (settled[i]?.status === "fulfilled") found[sub] = settled[i].value;
+      });
+      return found;
+    },
+    [address],
+  );
+
   const load = useCallback(async () => {
     if (!address) return;
     const [p, m, s] = await Promise.all([
       api.plans(address),
-      api.mandatesFor(address),
+      // A failed fallback read must not take the whole dashboard down with it:
+      // an empty list is the pre-paging behaviour for an unreadable index.
+      readMandatePage(address, 0).catch(() => ({ rows: [], total: null, done: true })),
       api.merchantSummary(address),
     ]);
 
     let loadedPlans: ApiPlan[] = [];
     if (p) {
       p.plans.forEach((plan) => observeContractRecord("plan", plan));
-      setPlans(p.plans);
       loadedPlans = p.plans;
     } else {
       try {
         loadedPlans = await chainPlansOf(address, address);
-        setPlans(loadedPlans);
       } catch {
-        setPlans([]);
+        loadedPlans = [];
       }
     }
 
-    let rows: ApiMandate[] = [];
-    if (m) {
-      rows = m.mandates;
-    } else {
-      try {
-        rows = await chainMandatesFor(address, address);
-      } catch {
-        rows = [];
-      }
-    }
-    rows.forEach((mandate) => observeContractRecord("mandate", mandate));
+    const rows = m.rows;
+
+    // The wallet may have switched accounts while these reads were in flight.
+    if (addressRef.current !== address) return;
+
+    setPlans(loadedPlans);
     setMandates(rows);
+    setMandateTotal(m.total);
+    setMandatesComplete(m.done);
+    setMoreError(null);
+    rows.forEach((mandate) => observeContractRecord("mandate", mandate));
     // Drop selections for mandates that no longer exist or are no longer endable.
     const endableIds = new Set(rows.filter(endable).map((r) => r.id));
     setSelected((prev) => new Set([...prev].filter((id) => endableIds.has(id))));
@@ -1392,16 +1512,52 @@ export default function MerchantPage() {
     // Read each subscriber's vault balance in parallel so the dashboard can
     // flag mandates that will fail. Individual reads may fail without breaking
     // the whole list.
-    const subscribers = [...new Set(rows.map((m) => m.subscriber))];
-    const settled = await Promise.allSettled(
-      subscribers.map((sub) => payflow.vaultBalance(address, sub, config.contracts.token)),
-    );
-    const b: Record<string, bigint | null> = {};
-    subscribers.forEach((sub, i) => {
-      if (settled[i]?.status === "fulfilled") b[sub] = settled[i].value;
-    });
+    const b = await readBalances([...new Set(rows.map((row) => row.subscriber))]);
+    if (addressRef.current !== address) return;
     setBalances(b);
-  }, [address]);
+  }, [address, readBalances, readMandatePage]);
+
+  /**
+   * Read the next page of older mandates and append it.
+   *
+   * Paging is offset based because the contract index is; `mergeMandates`
+   * keys by id so a subscription opened mid-page cannot duplicate a row.
+   */
+  async function loadMoreMandates() {
+    if (!address || mandates === null || moreBusy || mandatesComplete) return;
+    const merchant = address;
+    setMoreBusy(true);
+    setMoreError(null);
+    try {
+      const page = await readMandatePage(merchant, mandates.length);
+      if (addressRef.current !== merchant) return;
+
+      const merged = mergeMandates(mandates, page.rows);
+      page.rows.forEach((mandate) => observeContractRecord("mandate", mandate));
+      setMandates(merged);
+      if (page.total !== null) setMandateTotal(page.total);
+      // Stop when the source says it is done, or when a page added nothing —
+      // otherwise an indexer that ignores `offset` would load forever.
+      if (page.done || merged.length === mandates.length) setMandatesComplete(true);
+      // Without the backend, the totals are derived from the rows on screen.
+      setSummary((prev) =>
+        prev && prev.totalCollected !== null ? prev : chainMerchantSummary(merchant, merged),
+      );
+
+      const unseen = [...new Set(page.rows.map((row) => row.subscriber))].filter(
+        (subscriber) => !(subscriber in balances),
+      );
+      if (unseen.length > 0) {
+        const found = await readBalances(unseen);
+        if (addressRef.current !== merchant) return;
+        setBalances((prev) => ({ ...prev, ...found }));
+      }
+    } catch (err) {
+      setMoreError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMoreBusy(false);
+    }
+  }
 
   // SSE stream for live updates (payflow-backend#19)
   useStream({
@@ -2045,6 +2201,13 @@ export default function MerchantPage() {
         ) : (
           <RevenueChart points={revenue} size={bucketSize} meta={tokenMeta} />
         )}
+      </Panel>
+
+      <Panel
+        title={tr("Committed MRR")}
+        subtitle={tr("Monthly recurring revenue committed by active subscriptions. Estimated from each mandate's charge history.")}
+      >
+        <MrrTrendChart mandates={mandates} meta={tokenMeta} />
       </Panel>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -3174,6 +3337,42 @@ export default function MerchantPage() {
             }}
           />
         )}
+        {mandates !== null && mandates.length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-edge pt-4">
+            <p className="text-xs text-muted" role="status" aria-live="polite">
+              {mandateTotal !== null
+                ? tr("Showing {shown} of {total} subscribers.", {
+                    shown: mandates.length,
+                    total: mandateTotal,
+                  })
+                : tr("Showing {shown} subscribers.", { shown: mandates.length })}{" "}
+              {mandatesComplete
+                ? mandateTotal !== null && mandates.length < mandateTotal
+                  ? tr("Some subscribers could not be read.")
+                  : tr("All subscribers loaded.")
+                : ""}
+            </p>
+            {!mandatesComplete && (
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={moreBusy}
+                onClick={() => void loadMoreMandates()}
+              >
+                {moreBusy ? tr("Loading more…") : tr("Load more subscribers")}
+              </button>
+            )}
+          </div>
+        )}
+        {moreError && (
+          <div className="mt-3">
+            <Notice tone="error">
+              {tr("Could not load older subscribers: {error}. The rows already shown are unaffected.", {
+                error: moreError,
+              })}
+            </Notice>
+          </div>
+        )}
         </div>
 
         {/* Unpaid Subscribers Tab */}
@@ -3195,12 +3394,18 @@ export default function MerchantPage() {
                 const badge = discountBadge(m);
                 const overdueHours = Math.floor(unpaid.overdueDuration / 3600);
                 const overdueDays = Math.floor(unpaid.overdueDuration / 86400);
+                // Plural keys rather than a suffix: German and French pluralise
+                // nouns differently, so concatenating an English "s" is wrong.
                 const overdueText =
                   overdueDays > 0
-                    ?tr("{0} day{1}", { "0": overdueDays, "1": overdueDays === 1 ? "" :tr("s") })
+                    ? overdueDays === 1
+                      ? tr("1 day")
+                      : tr("{0} days", { "0": overdueDays })
                     : overdueHours > 0
-                      ?tr("{0} hour{1}", { "0": overdueHours, "1": overdueHours === 1 ? "" :tr("s") })
-                      :tr("less than 1 hour");
+                      ? overdueHours === 1
+                        ? tr("1 hour")
+                        : tr("{0} hours", { "0": overdueHours })
+                      : tr("less than 1 hour");
                 return (
                   <div
                     key={m.id}

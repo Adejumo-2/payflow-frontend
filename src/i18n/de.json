@@ -68,6 +68,7 @@
   "Amount (": "Betrag (",
   "Amount (XLM)": "Betrag (XLM)",
   "Amount ({0})": "Betrag ({0})",
+  "Amount is too large.": "Der Betrag ist zu groß.",
   "Amount must be greater than zero.": "Der Betrag muss größer als null sein.",
   "Annual": "Jährlich",
   "Anyone settles the charge when it comes due": "Jeder kann die Zahlung bei Fälligkeit einziehen",

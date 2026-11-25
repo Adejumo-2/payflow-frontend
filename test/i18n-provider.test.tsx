@@ -42,6 +42,18 @@ describe("persistent locale without remounting wallet or form state", () => {
     expect((screen.getByLabelText("Amount") as HTMLInputElement).value).toBe("1.234");
     expect(screen.getByText("Wrong network")).toBeTruthy();
   });
+  it("restores the user's language choice after the provider remounts", async () => {
+    const firstMount = render(app());
+    fireEvent.change(screen.getByRole("combobox", { name: "Language" }), {
+      target: { value: "fr" },
+    });
+    expect(await screen.findByText("Aucun portefeuille connecté")).toBeTruthy();
+    firstMount.unmount();
+
+    render(app());
+    expect(await screen.findByText("Aucun portefeuille connecté")).toBeTruthy();
+    expect(screen.getByTestId("locale").textContent).toBe("fr");
+  });
   it("synchronizes valid changes across tabs and rejects unsupported locales", async () => {
     render(app());
     act(() => window.dispatchEvent(new StorageEvent("storage", { key: LOCALE_STORAGE_KEY, newValue: "fr" })));

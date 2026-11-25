@@ -5,10 +5,8 @@ import { useI18n } from "@/i18n/provider";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
+import dynamic from "next/dynamic";
 import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiPlan, type ApiWebhook, type MerchantSummary, type StreamEvent } from "@/lib/api";
-import { RevenueChart } from "@/components/RevenueChart";
-import { WebhookDeliveryHistory } from "@/components/WebhookDeliveryHistory";
-import { CohortRetentionTable } from "@/components/CohortRetentionTable";
 import { buildCsv, buildMonthlyRevenueCsv, downloadCsv, exportFilename, monthlyRevenueFilename, type ChargeRow, type MonthlyRevenueRow } from "@/lib/csv";
 import { fillBuckets, parseRevenue, type BucketSize, type RevenuePoint } from "@/lib/revenue";
 import { parseMerchantChurn, type MerchantChurnMonth } from "@/lib/churn";
@@ -66,7 +64,6 @@ import { countOpenMandates, filterAndSortPlans, type PlanActiveOption } from "@/
 import { formatUsdEstimate, formatUsdcEstimate, useXlmUsdPrice } from "@/lib/price";
 import { AmountInput } from "@/components/AmountInput";
 import { CopyButton } from "@/components/CopyButton";
-import { QrCode } from "@/components/QrCode";
 // Mirrors payflow.validatePlanName, kept here so the form can check a name
 // without the SDK-backed module in this route's first-load bundle.
 function validatePlanNameLocal(name: string): string | null {
@@ -90,6 +87,52 @@ import { Money } from "@/components/Money";
 import { NotificationCentre } from "@/components/NotificationCentre";
 import { evaluateMerchantNotifications } from "@/lib/notifications";
 import { planLink } from "@/lib/share";
+
+function RevenueChartSkeleton() {
+  const { t: tr } = useI18n();
+  return <SkeletonRows rows={2} label={tr("Loading revenue")} />;
+}
+
+function CohortRetentionSkeleton() {
+  return (
+    <Panel
+      title="Cohort retention"
+      subtitle="Percentage of each signup month's subscribers still active in subsequent months. Higher percentages indicate better retention."
+    >
+      <SkeletonRows rows={3} label="Loading cohort retention data" />
+    </Panel>
+  );
+}
+
+function WebhookHistorySkeleton() {
+  const { t: tr } = useI18n();
+  return <div className="mt-3"><SkeletonRows rows={2} label={tr("Loading history…")} /></div>;
+}
+
+function QrCodeSkeleton() {
+  const { t: tr } = useI18n();
+  return <div className="mt-3"><SkeletonRows rows={1} label={tr("Loading…")} /></div>;
+}
+
+const RevenueChart = dynamic(
+  () => import("@/components/RevenueChart").then((module) => module.RevenueChart),
+  { ssr: false, loading: () => <RevenueChartSkeleton /> },
+);
+
+const CohortRetentionTable = dynamic(
+  () => import("@/components/CohortRetentionTable").then((module) => module.CohortRetentionTable),
+  { ssr: false, loading: () => <CohortRetentionSkeleton /> },
+);
+
+const WebhookDeliveryHistory = dynamic(
+  () => import("@/components/WebhookDeliveryHistory").then((module) => module.WebhookDeliveryHistory),
+  { ssr: false, loading: () => <WebhookHistorySkeleton /> },
+);
+
+const QrCode = dynamic(
+  () => import("@/components/QrCode").then((module) => module.QrCode),
+  { ssr: false, loading: () => <QrCodeSkeleton /> },
+);
 
 const PERIOD_OPTIONS = [
   { label: "Every minute (demo)", value: 60 },

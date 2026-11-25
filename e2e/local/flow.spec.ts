@@ -135,6 +135,7 @@ test("subscriber cancels the mandate", async ({ page }) => {
   await expect(cancel).toBeVisible({ timeout: 60_000 });
   await cancel.click();
   await page
+    .getByRole("dialog")
     .getByRole("button", { name: "Confirm cancellation" })
     .click();
   await approveWalletSigning(page);

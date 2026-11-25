@@ -15,7 +15,7 @@ import { config } from "@/lib/config";
 import { payflow } from "@/lib/lazy-payflow";
 import { useWallet } from "@/lib/wallet";
 
-import { AddressLink, Badge, Empty, Notice, Panel, TxLink } from "@/components/ui";
+import { AddressLink, Badge, Empty, Notice, Panel, SkeletonPlanDetail, TxLink } from "@/components/ui";
 import { cursorPage, TABLE_PAGE_SIZE } from "@/lib/pagination";
 
 const PaginationControl = lazy(() =>

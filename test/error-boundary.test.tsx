@@ -26,6 +26,7 @@ afterEach(() => {
   consoleError.mockRestore();
   cleanup();
   window.localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 function renderWithI18n(ui: React.ReactElement) {
@@ -106,6 +107,15 @@ describe("route-level states", () => {
     expect(screen.getByRole("alert")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads the route from the fallback", () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { reload });
+    renderWithI18n(<ErrorRouteFallback error={new Error("boom")} reset={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload page" }));
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it("announces the loading fallback", () => {

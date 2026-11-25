@@ -277,6 +277,16 @@ export function PlanPageClient({ planId }: PlanPageClientProps) {
               onChange={(e) => setMaxCharges(e.target.value)}
               aria-invalid={!chargeLimitCheck.ok || undefined}
               aria-describedby={!chargeLimitCheck.ok ? "plan-charge-limit-error" : undefined}
+              onKeyDown={(e) => {
+                // Enter is the natural keyboard submit for the only field in
+                // this form; without it a keyboard user must tab past it to
+                // reach Subscribe.
+                if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                e.preventDefault();
+                if (!busy && address && !networkMismatch && unavailable === null) {
+                  void subscribe();
+                }
+              }}
             />
             {!chargeLimitCheck.ok && (
               <p id="plan-charge-limit-error" role="alert" className="mt-1 text-sm text-danger">

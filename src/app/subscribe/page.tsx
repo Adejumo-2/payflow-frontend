@@ -852,6 +852,14 @@ function SubscribeInner() {
                           }
                           aria-invalid={!cap.ok || undefined}
                           aria-describedby={!cap.ok ? `limit-error-${plan.id}` : undefined}
+                          onKeyDown={(e) => {
+                            // Enter submits the card's small form from its only
+                            // text field. Without it a keyboard user has to tab
+                            // through the vault controls to reach Subscribe.
+                            if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                            e.preventDefault();
+                            if (busy === null) openConfirmation(plan);
+                          }}
                         />
                         {!cap.ok && (
                           <p id={`limit-error-${plan.id}`} role="alert" className="mt-1 text-sm text-danger">

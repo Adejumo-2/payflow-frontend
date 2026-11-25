@@ -247,7 +247,7 @@ export function WalletLayoutInner({ children }: { children: React.ReactNode }) {
             <div className="flex min-w-0 items-center gap-6">
               <Link
                 href="/"
-                prefetch={reducedData ? false : undefined}
+                {...(reducedData ? { prefetch: false as const } : {})}
                 className="shrink-0 text-lg font-semibold tracking-tight"
               >{tr("Pay")}<span className="text-accent">{tr("flow")}</span>
               </Link>
@@ -256,7 +256,7 @@ export function WalletLayoutInner({ children }: { children: React.ReactNode }) {
                   <Link
                     key={item.href}
                     href={item.href}
-                    prefetch={reducedData ? false : undefined}
+                    {...(reducedData ? { prefetch: false as const } : {})}
                     aria-current={isCurrent(pathname, item.href) ? "page" : undefined}
                     className={`hover:text-fg ${
                       isCurrent(pathname, item.href) ? "text-fg" : ""
@@ -335,7 +335,7 @@ export function WalletLayoutInner({ children }: { children: React.ReactNode }) {
                 <li key={item.href}>
                   <Link
                     href={item.href}
-                    prefetch={reducedData ? false : undefined}
+                    {...(reducedData ? { prefetch: false as const } : {})}
                     aria-current={isCurrent(pathname, item.href) ? "page" : undefined}
                     className={`block rounded-lg px-2 py-2.5 text-sm text-muted hover:bg-fg/5 hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                       isCurrent(pathname, item.href) ? "bg-fg/5 text-fg" : ""

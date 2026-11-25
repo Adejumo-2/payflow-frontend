@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import { config } from "@/lib/config";
 import type { TokenMeta } from "@/lib/format";
+import { subscribeToStreamEvents } from "@/lib/stream";
 import { useWallet } from "@/lib/wallet";
 import { Empty, Notice, Panel, SkeletonRows } from "@/components/ui";
 

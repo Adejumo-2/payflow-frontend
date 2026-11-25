@@ -70,6 +70,10 @@ describe("prefers-reduced-data detection", () => {
   it("detects reduced-data from undefined window, media query, and Save-Data", () => {
     expect(detectReducedData(undefined)).toBe(false);
     expect(detectReducedData({})).toBe(false);
+    expect(detectReducedData({ navigator: {} })).toBe(false);
+    expect(detectReducedData({ matchMedia: null as unknown as typeof window.matchMedia })).toBe(false);
+    expect(detectReducedData({ matchMedia: (() => null) as unknown as typeof window.matchMedia })).toBe(false);
+    expect(detectReducedData({ navigator: { connection: { saveData: false } } })).toBe(false);
     expect(
       detectReducedData({
         matchMedia: () => ({ matches: true }),

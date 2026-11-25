@@ -17,6 +17,7 @@ import {
   updateStoredSessionAddress,
   useWallet,
 } from "@/lib/wallet";
+import { merchantAuthToken } from "@/lib/sep10";
 import type { StellarWalletsKit } from "@creit.tech/stellar-wallets-kit";
 
 const ADDRESS_A = "GAEWDXVDI3WI35TWTZXNQ4NTRYIG6J34XPRSNKX655LBA377M5ZOCBY5";
@@ -798,5 +799,13 @@ describe("WalletProvider connection and signing lifecycle", () => {
 
     expect(result.current.reconnectError).toBe(RECONNECT_DISCONNECTED_ERROR);
     expect(result.current.address).toBe(ADDRESS_A);
+  });
+
+  it("configures merchant auth token provider only for connected account", async () => {
+    localStorage.setItem(STORAGE_KEY, serializeSession(WALLET_ID, ADDRESS_A));
+    const { result } = mountWallet();
+    await waitFor(() => expect(result.current.address).toBe(ADDRESS_A));
+
+    expect(await merchantAuthToken(ADDRESS_B)).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { api, checkWebhookUrl, type ApiChargeAttempt, type ApiMandate, type ApiPlan, type ApiWebhook, type MerchantSummary, type StreamEvent } from "@/lib/api";
+import { MrrTrendChart } from "@/components/MrrTrendChart";
 import { RevenueChart } from "@/components/RevenueChart";
 import { WebhookDeliveryHistory } from "@/components/WebhookDeliveryHistory";
 import { CohortRetentionTable } from "@/components/CohortRetentionTable";
@@ -1956,6 +1957,13 @@ export default function MerchantPage() {
         )}
       </Panel>
 
+      <Panel
+        title={tr("Committed MRR")}
+        subtitle={tr("Monthly recurring revenue committed by active subscriptions. Estimated from each mandate's charge history.")}
+      >
+        <MrrTrendChart mandates={mandates} meta={tokenMeta} />
+      </Panel>
+
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat
           label={tr("Collected")}
@@ -3014,12 +3022,18 @@ export default function MerchantPage() {
                 const badge = discountBadge(m);
                 const overdueHours = Math.floor(unpaid.overdueDuration / 3600);
                 const overdueDays = Math.floor(unpaid.overdueDuration / 86400);
+                // Plural keys rather than a suffix: German and French pluralise
+                // nouns differently, so concatenating an English "s" is wrong.
                 const overdueText =
                   overdueDays > 0
-                    ?tr("{0} day{1}", { "0": overdueDays, "1": overdueDays === 1 ? "" :tr("s") })
+                    ? overdueDays === 1
+                      ? tr("1 day")
+                      : tr("{0} days", { "0": overdueDays })
                     : overdueHours > 0
-                      ?tr("{0} hour{1}", { "0": overdueHours, "1": overdueHours === 1 ? "" :tr("s") })
-                      :tr("less than 1 hour");
+                      ? overdueHours === 1
+                        ? tr("1 hour")
+                        : tr("{0} hours", { "0": overdueHours })
+                      : tr("less than 1 hour");
                 return (
                   <div
                     key={m.id}

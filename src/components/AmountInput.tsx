@@ -30,6 +30,7 @@ export function AmountInput({
   hint,
   hideError = false,
   describedBy,
+  invalid = false,
   onBlur,
 }: {
   id: string;
@@ -51,6 +52,8 @@ export function AmountInput({
   hideError?: boolean;
   /** Extra id for `aria-describedby`, e.g. the form's own message element. */
   describedBy?: string;
+  /** External validation error flag (e.g. balance check in the parent form). */
+  invalid?: boolean;
   onBlur?: () => void;
 }) {
   const { locale, amountError, t: tr, translateMessage } = useI18n();
@@ -89,7 +92,7 @@ export function AmountInput({
         placeholder={placeholder}
         value={value}
         disabled={disabled}
-        aria-invalid={message ? true : undefined}
+        aria-invalid={invalid || Boolean(message) || undefined}
         aria-describedby={described || undefined}
         onChange={(e) => onChange(normaliseAmountInput(e.target.value))}
         onBlur={onBlur}
@@ -100,7 +103,7 @@ export function AmountInput({
         </p>
       )}
       {!hideError && message && (
-        <p id={errorId} className="mt-1 text-sm text-danger">
+        <p id={errorId} role="alert" className="mt-1 text-sm text-danger">
           {translateMessage(message)}
         </p>
       )}

@@ -222,6 +222,13 @@ export function Activity() {
     };
   }, [address, refresh]);
 
+  useEffect(() => {
+    if (!address) return;
+    return subscribeToStreamEvents((update) => {
+      if (update.address === address) void refresh(address);
+    });
+  }, [address, refresh]);
+
   const visibleItems = useMemo(
     () => (itemsAddress === address ? items : []),
     [itemsAddress, address, items],
